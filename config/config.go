@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -66,13 +67,26 @@ func Load(configPath string) (*Config, error) {
 
 func (c *Config) Validate() error {
 	if c.Token == "" {
-		return fmt.Errorf("GitHub token is required (set GITHUB_TOKEN env var or token in config)")
+		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable or 'token' in config file")
 	}
 	if c.RepoOwner == "" {
-		return fmt.Errorf("repository owner is required (set repo_owner in config or use --repo)")
+		return fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
 	}
 	if c.RepoName == "" {
-		return fmt.Errorf("repository name is required (set repo_name in config or use --repo)")
+		return fmt.Errorf("repository name is required. Set GH_REPO_NAME env var, 'repo_name' in config, or use --repo-name flag")
 	}
 	return nil
+}
+
+// IsAuthenticationError checks if an error is likely related to authentication
+func IsAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// GitHub returns 404 for private repos when not authenticated
+	return strings.Contains(errStr, "404") ||
+		strings.Contains(errStr, "401") ||
+		strings.Contains(errStr, "Bad credentials") ||
+		strings.Contains(errStr, "authentication")
 }

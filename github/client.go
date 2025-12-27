@@ -26,7 +26,7 @@ type Client struct {
 func NewClient(token, owner, repo string) *Client {
 	hc := &http.Client{}
 	gh := github.NewClient(hc)
-	gh.WithAuthToken(token)
+	gh = gh.WithAuthToken(token)
 	return &Client{
 		owner: owner,
 		repo:  repo,

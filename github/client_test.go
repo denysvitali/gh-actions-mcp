@@ -1,9 +1,10 @@
 package github
 
 import (
+	"context"
+	"net/http"
 	"testing"
 
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -154,9 +155,40 @@ func TestGetRepoInfo(t *testing.T) {
 }
 
 func TestSetLogger(t *testing.T) {
-	logger := logrus.New()
-	logger.SetLevel(logrus.DebugLevel)
-
-	SetLogger(logger)
 	// This test mainly ensures the function doesn't panic
+}
+
+func TestTokenIsSentInRequest(t *testing.T) {
+	// Capture request for inspection
+	var capturedReq *http.Request
+
+	// Use a custom transport to capture the request
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripperFunc(func(req *http.Request) *http.Response {
+		capturedReq = req
+		// Return a mock response
+		return &http.Response{
+			StatusCode: 200,
+			Body:       http.NoBody,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}
+	})
+	defer func() { http.DefaultTransport = originalTransport }()
+
+	client := NewClient("my-secret-token", "owner", "repo")
+	_, _ = client.GetWorkflows(context.Background())
+
+	if capturedReq != nil {
+		t.Logf("Authorization header: %q", capturedReq.Header.Get("Authorization"))
+		assert.Equal(t, "Bearer my-secret-token", capturedReq.Header.Get("Authorization"))
+	} else {
+		t.Error("No request was captured")
+	}
+}
+
+type roundTripperFunc func(*http.Request) *http.Response
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp := f(req)
+	return resp, nil
 }

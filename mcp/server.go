@@ -118,7 +118,11 @@ func (s *MCPServer) getActionsStatus(arguments map[string]interface{}) (*mcp.Cal
 
 	status, err := s.client.GetActionsStatus(ctx, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to get actions status: %v", err)), nil
+		errMsg := fmt.Sprintf("failed to get actions status: %v", err)
+		if config.IsAuthenticationError(err) {
+			errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		}
+		return mcp.NewToolResultError(errMsg), nil
 	}
 
 	data, err := json.MarshalIndent(status, "", "  ")
@@ -136,7 +140,11 @@ func (s *MCPServer) listWorkflows(arguments map[string]interface{}) (*mcp.CallTo
 
 	workflows, err := s.client.GetWorkflows(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to list workflows: %v", err)), nil
+		errMsg := fmt.Sprintf("failed to list workflows: %v", err)
+		if config.IsAuthenticationError(err) {
+			errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		}
+		return mcp.NewToolResultError(errMsg), nil
 	}
 
 	data, err := json.MarshalIndent(workflows, "", "  ")
@@ -170,13 +178,21 @@ func (s *MCPServer) getWorkflowRuns(arguments map[string]interface{}) (*mcp.Call
 	if id, err := strconv.ParseInt(workflowID, 10, 64); err == nil {
 		runs, err = s.client.GetWorkflowRuns(ctx, id)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to get workflow runs: %v", err)), nil
+			errMsg := fmt.Sprintf("failed to get workflow runs: %v", err)
+			if config.IsAuthenticationError(err) {
+				errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+			}
+			return mcp.NewToolResultError(errMsg), nil
 		}
 	} else {
 		// Try by name - list workflows and find by name
 		workflows, err := s.client.GetWorkflows(ctx)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to get workflows: %v", err)), nil
+			errMsg := fmt.Sprintf("failed to get workflows: %v", err)
+			if config.IsAuthenticationError(err) {
+				errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+			}
+			return mcp.NewToolResultError(errMsg), nil
 		}
 
 		for _, w := range workflows {
@@ -230,7 +246,11 @@ func (s *MCPServer) triggerWorkflow(arguments map[string]interface{}) (*mcp.Call
 
 	err := s.client.TriggerWorkflow(ctx, workflowID, ref)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to trigger workflow: %v", err)), nil
+		errMsg := fmt.Sprintf("failed to trigger workflow: %v", err)
+		if config.IsAuthenticationError(err) {
+			errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		}
+		return mcp.NewToolResultError(errMsg), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully triggered workflow %s on branch %s", workflowID, ref)), nil
@@ -249,7 +269,11 @@ func (s *MCPServer) cancelWorkflowRun(arguments map[string]interface{}) (*mcp.Ca
 
 	err := s.client.CancelWorkflowRun(ctx, runID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to cancel workflow run: %v", err)), nil
+		errMsg := fmt.Sprintf("failed to cancel workflow run: %v", err)
+		if config.IsAuthenticationError(err) {
+			errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		}
+		return mcp.NewToolResultError(errMsg), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully cancelled workflow run %d", runID)), nil
@@ -268,7 +292,11 @@ func (s *MCPServer) rerunWorkflow(arguments map[string]interface{}) (*mcp.CallTo
 
 	err := s.client.RerunWorkflowRun(ctx, runID)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("failed to rerun workflow: %v", err)), nil
+		errMsg := fmt.Sprintf("failed to rerun workflow: %v", err)
+		if config.IsAuthenticationError(err) {
+			errMsg = fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		}
+		return mcp.NewToolResultError(errMsg), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Successfully triggered rerun for workflow run %d", runID)), nil

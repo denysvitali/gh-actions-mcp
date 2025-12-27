@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
@@ -261,7 +262,9 @@ func TestGetActionsStatusWithMockData(t *testing.T) {
 	// The result should contain an error since the token is invalid
 	content, ok := result.Content[0].(mcp.TextContent)
 	assert.True(t, ok)
-	assert.Contains(t, content.Text, "failed to get actions status")
+	// Should contain either the original error or the authentication error message
+	assert.True(t, strings.Contains(content.Text, "failed to get actions status") ||
+		strings.Contains(content.Text, "authentication failed"))
 }
 
 // Test workflow ID parsing
