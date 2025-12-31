@@ -1,0 +1,44 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build -o gh-actions-mcp .
+
+      - name: Build multi-platform
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p bin
+          GOOS=linux GOARCH=amd64 go build -o bin/gh-actions-mcp-linux-amd64 .
+          GOOS=darwin GOARCH=amd64 go build -o bin/gh-actions-mcp-darwin-amd64 .
+          GOOS=windows GOARCH=amd64 go build -o bin/gh-actions-mcp-windows-amd64.exe .
+
+      - name: Upload artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: bin/
