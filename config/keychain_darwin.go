@@ -16,21 +16,30 @@ func getTokenFromKeychain() (string, error) {
 		return "", fmt.Errorf("keychain is only available on macOS")
 	}
 
-	// GitHub CLI stores the token with service "github.com" and account "oauth"
-	data, err := keychain.GetGenericPassword("github.com", "oauth", "", "")
+	// gh CLI stores the token as an Internet password with server "github.com"
+	query := keychain.NewItem()
+	query.SetSecClass(keychain.SecClassInternetPassword)
+	query.SetServer("github.com")
+	query.SetMatchLimit(keychain.MatchLimitOne)
+	query.SetReturnData(true)
+
+	results, err := keychain.QueryItem(query)
 	if err != nil {
-		return "", fmt.Errorf("failed to get token from keychain: %w", err)
+		return "", fmt.Errorf("failed to query keychain: %w", err)
 	}
 
-	if data == nil || len(data) == 0 {
+	if len(results) == 0 {
+		return "", fmt.Errorf("no GitHub token found in keychain")
+	}
+
+	token := string(results[0].Data)
+	if token == "" {
 		return "", fmt.Errorf("token found but empty in keychain")
 	}
 
-	token := string(data)
-
-	// Verify it looks like a GitHub token (starts with gho_)
-	if !strings.HasPrefix(token, "gho_") {
-		log.Debugf("Warning: token from keychain doesn't start with gho_, may not be a GitHub token")
+	// Verify it looks like a GitHub token (gho_ = OAuth, ghp_ = PAT, ghs_ = server-to-server)
+	if !strings.HasPrefix(token, "gho_") && !strings.HasPrefix(token, "ghp_") && !strings.HasPrefix(token, "ghs_") {
+		log.Debugf("Warning: token from keychain doesn't have expected prefix (gho_/ghp_/ghs_)")
 	}
 
 	return token, nil
