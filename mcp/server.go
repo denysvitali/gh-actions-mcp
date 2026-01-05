@@ -209,11 +209,10 @@ func (s *MCPServer) registerTools() {
 	), s.getWorkflowLogs)
 }
 
-func (s *MCPServer) getActionsStatus(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
+func (s *MCPServer) getActionsStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := s.getLimit()
 
-	if l, ok := arguments["limit"]; ok {
+	if l, ok := request.GetArguments()["limit"]; ok {
 		if n, err := strconv.Atoi(fmt.Sprintf("%.0f", l)); err == nil {
 			limit = n
 		}
@@ -229,11 +228,10 @@ func (s *MCPServer) getActionsStatus(arguments map[string]interface{}) (*mcp.Cal
 	return jsonResult(status)
 }
 
-func (s *MCPServer) listWorkflows(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
+func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := s.getLimit()
 
-	if l, ok := arguments["limit"]; ok {
+	if l, ok := request.GetArguments()["limit"]; ok {
 		if n, err := strconv.Atoi(fmt.Sprintf("%.0f", l)); err == nil {
 			limit = n
 		}
@@ -258,16 +256,15 @@ func (s *MCPServer) listWorkflows(arguments map[string]interface{}) (*mcp.CallTo
 	return jsonResult(result)
 }
 
-func (s *MCPServer) getWorkflowRuns(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
+func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := s.getLimit()
 
-	workflowID, ok := arguments["workflow_id"].(string)
+	workflowID, ok := request.GetArguments()["workflow_id"].(string)
 	if !ok || workflowID == "" {
 		return errorResult("workflow_id is required"), nil
 	}
 
-	if l, ok := arguments["limit"]; ok {
+	if l, ok := request.GetArguments()["limit"]; ok {
 		if n, err := strconv.Atoi(fmt.Sprintf("%.0f", l)); err == nil {
 			limit = n
 		}
@@ -318,16 +315,14 @@ func (s *MCPServer) getWorkflowRuns(arguments map[string]interface{}) (*mcp.Call
 	return jsonResult(result)
 }
 
-func (s *MCPServer) triggerWorkflow(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
-
-	workflowID, ok := arguments["workflow_id"].(string)
+func (s *MCPServer) triggerWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	workflowID, ok := request.GetArguments()["workflow_id"].(string)
 	if !ok || workflowID == "" {
 		return errorResult("workflow_id is required"), nil
 	}
 
 	ref := "main"
-	if r, ok := arguments["ref"].(string); ok && r != "" {
+	if r, ok := request.GetArguments()["ref"].(string); ok && r != "" {
 		ref = r
 	}
 
@@ -341,10 +336,8 @@ func (s *MCPServer) triggerWorkflow(arguments map[string]interface{}) (*mcp.Call
 	return textResult(fmt.Sprintf("Successfully triggered workflow %s on branch %s", workflowID, ref)), nil
 }
 
-func (s *MCPServer) cancelWorkflowRun(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
-
-	runID, ok := extractRunID(arguments)
+func (s *MCPServer) cancelWorkflowRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	runID, ok := extractRunID(request.GetArguments())
 	if !ok {
 		return errorResult("run_id is required"), nil
 	}
@@ -359,10 +352,8 @@ func (s *MCPServer) cancelWorkflowRun(arguments map[string]interface{}) (*mcp.Ca
 	return textResult(fmt.Sprintf("Successfully cancelled workflow run %d", runID)), nil
 }
 
-func (s *MCPServer) rerunWorkflow(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
-
-	runID, ok := extractRunID(arguments)
+func (s *MCPServer) rerunWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	runID, ok := extractRunID(request.GetArguments())
 	if !ok {
 		return errorResult("run_id is required"), nil
 	}
@@ -377,21 +368,19 @@ func (s *MCPServer) rerunWorkflow(arguments map[string]interface{}) (*mcp.CallTo
 	return textResult(fmt.Sprintf("Successfully triggered rerun for workflow run %d", runID)), nil
 }
 
-func (s *MCPServer) waitWorkflowRun(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
-
-	runID, ok := extractRunID(arguments)
+func (s *MCPServer) waitWorkflowRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	runID, ok := extractRunID(request.GetArguments())
 	if !ok {
 		return errorResult("run_id is required"), nil
 	}
 
 	pollInterval := 5
-	if p, ok := arguments["poll_interval"].(float64); ok {
+	if p, ok := request.GetArguments()["poll_interval"].(float64); ok {
 		pollInterval = int(p)
 	}
 
 	timeout := 600
-	if t, ok := arguments["timeout"].(float64); ok {
+	if t, ok := request.GetArguments()["timeout"].(float64); ok {
 		timeout = int(t)
 	}
 
@@ -425,21 +414,19 @@ func (s *MCPServer) waitWorkflowRun(arguments map[string]interface{}) (*mcp.Call
 	return textResult(output), nil
 }
 
-func (s *MCPServer) getWorkflowLogs(arguments map[string]interface{}) (*mcp.CallToolResult, error) {
-	ctx := context.Background()
-
-	runID, ok := extractRunID(arguments)
+func (s *MCPServer) getWorkflowLogs(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	runID, ok := extractRunID(request.GetArguments())
 	if !ok {
 		return errorResult("run_id is required"), nil
 	}
 
 	head := 0
-	if h, ok := arguments["head"].(float64); ok && h > 0 {
+	if h, ok := request.GetArguments()["head"].(float64); ok && h > 0 {
 		head = int(h)
 	}
 
 	tail := 0
-	if t, ok := arguments["tail"].(float64); ok && t > 0 {
+	if t, ok := request.GetArguments()["tail"].(float64); ok && t > 0 {
 		tail = int(t)
 	} else if head == 0 {
 		// Apply default log limit when neither head nor tail is specified
@@ -448,12 +435,12 @@ func (s *MCPServer) getWorkflowLogs(arguments map[string]interface{}) (*mcp.Call
 
 	// Extract filter parameters
 	filter := ""
-	if f, ok := arguments["filter"].(string); ok {
+	if f, ok := request.GetArguments()["filter"].(string); ok {
 		filter = f
 	}
 
 	filterRegex := ""
-	if fr, ok := arguments["filter_regex"].(string); ok {
+	if fr, ok := request.GetArguments()["filter_regex"].(string); ok {
 		filterRegex = fr
 	}
 
@@ -463,7 +450,7 @@ func (s *MCPServer) getWorkflowLogs(arguments map[string]interface{}) (*mcp.Call
 	}
 
 	contextLines := 0
-	if c, ok := arguments["context"].(float64); ok && c > 0 {
+	if c, ok := request.GetArguments()["context"].(float64); ok && c > 0 {
 		contextLines = int(c)
 	}
 
