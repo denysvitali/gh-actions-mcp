@@ -186,7 +186,7 @@ func (s *MCPServer) registerTools() {
 
 	// Tool: get_workflow_logs
 	s.srv.AddTool(mcp.NewTool("get_workflow_logs",
-		mcp.WithDescription("Get the logs for a specific workflow run, with optional line limiting"),
+		mcp.WithDescription("Get the logs for a specific workflow run, with optional filtering and line limiting"),
 		mcp.WithNumber("run_id",
 			mcp.Description("The workflow run ID to get logs for"),
 			mcp.Required(),
@@ -196,6 +196,15 @@ func (s *MCPServer) registerTools() {
 		),
 		mcp.WithNumber("head",
 			mcp.Description("Return the first N lines of logs (e.g., 100 for the first 100 lines)"),
+		),
+		mcp.WithString("filter",
+			mcp.Description("Filter logs to lines containing this substring (case-insensitive). Mutually exclusive with filter_regex."),
+		),
+		mcp.WithString("filter_regex",
+			mcp.Description("Filter logs to lines matching this regular expression pattern. Mutually exclusive with filter."),
+		),
+		mcp.WithNumber("context",
+			mcp.Description("Number of lines to show before and after each match (like grep -C). Only applies when filter or filter_regex is used. Default: 0"),
 		),
 	), s.getWorkflowLogs)
 }
@@ -437,10 +446,41 @@ func (s *MCPServer) getWorkflowLogs(arguments map[string]interface{}) (*mcp.Call
 		tail = s.getLogLimit()
 	}
 
-	s.log.Infof("Getting workflow logs for run %d on %s/%s (head: %d, tail: %d)",
-		runID, s.config.RepoOwner, s.config.RepoName, head, tail)
+	// Extract filter parameters
+	filter := ""
+	if f, ok := arguments["filter"].(string); ok {
+		filter = f
+	}
 
-	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail)
+	filterRegex := ""
+	if fr, ok := arguments["filter_regex"].(string); ok {
+		filterRegex = fr
+	}
+
+	// Validate mutual exclusivity
+	if filter != "" && filterRegex != "" {
+		return errorResult("filter and filter_regex are mutually exclusive; use only one"), nil
+	}
+
+	contextLines := 0
+	if c, ok := arguments["context"].(float64); ok && c > 0 {
+		contextLines = int(c)
+	}
+
+	s.log.Infof("Getting workflow logs for run %d on %s/%s (head: %d, tail: %d, filter: %q, filter_regex: %q, context: %d)",
+		runID, s.config.RepoOwner, s.config.RepoName, head, tail, filter, filterRegex, contextLines)
+
+	// Create filter options
+	var filterOpts *github.LogFilterOptions
+	if filter != "" || filterRegex != "" {
+		filterOpts = &github.LogFilterOptions{
+			Filter:       filter,
+			FilterRegex:  filterRegex,
+			ContextLines: contextLines,
+		}
+	}
+
+	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, filterOpts)
 	if err != nil {
 		return errorResult(s.formatAuthError(err, "failed to get workflow logs")), nil
 	}

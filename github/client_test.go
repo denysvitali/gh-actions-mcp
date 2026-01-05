@@ -208,6 +208,308 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// Tests for log filtering functionality
+
+func TestParseLogLines(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		expectedCount   int
+		expectedHeaders int
+	}{
+		{
+			name:            "Single file with content",
+			input:           "=== job/step.txt ===\nline1\nline2",
+			expectedCount:   3,
+			expectedHeaders: 1,
+		},
+		{
+			name:            "Multiple files",
+			input:           "=== file1.txt ===\ncontent1\n=== file2.txt ===\ncontent2",
+			expectedCount:   4,
+			expectedHeaders: 2,
+		},
+		{
+			name:            "Empty input",
+			input:           "",
+			expectedCount:   1, // splits to [""]
+			expectedHeaders: 0,
+		},
+		{
+			name:            "Only content no headers",
+			input:           "line1\nline2\nline3",
+			expectedCount:   3,
+			expectedHeaders: 0,
+		},
+		{
+			name:            "Header pattern must be exact",
+			input:           "=== not closed\n=== valid.txt ===\ncontent",
+			expectedCount:   3,
+			expectedHeaders: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseLogLines(tt.input)
+			assert.Equal(t, tt.expectedCount, len(result))
+
+			headerCount := 0
+			for _, line := range result {
+				if line.isHeader {
+					headerCount++
+				}
+			}
+			assert.Equal(t, tt.expectedHeaders, headerCount)
+		})
+	}
+}
+
+func TestFilterLogLines(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		filter        string
+		filterRegex   string
+		context       int
+		expectMatch   bool
+		expectError   bool
+		expectedLines int
+	}{
+		{
+			name:          "Simple substring match",
+			input:         "=== test.txt ===\nline1\nERROR here\nline3",
+			filter:        "error",
+			context:       0,
+			expectMatch:   true,
+			expectedLines: 2, // header + match
+		},
+		{
+			name:          "Case insensitive match",
+			input:         "=== test.txt ===\nERROR\nerror\nError",
+			filter:        "ERROR",
+			context:       0,
+			expectMatch:   true,
+			expectedLines: 4, // header + 3 matches
+		},
+		{
+			name:          "Regex match",
+			input:         "=== test.txt ===\nerror: code 123\nwarning: code 456",
+			filterRegex:   "code \\d+",
+			context:       0,
+			expectMatch:   true,
+			expectedLines: 3, // header + 2 matches
+		},
+		{
+			name:        "Invalid regex",
+			input:       "=== test.txt ===\nline",
+			filterRegex: "[invalid",
+			expectError: true,
+		},
+		{
+			name:        "No matches",
+			input:       "=== test.txt ===\nline1\nline2",
+			filter:      "notfound",
+			expectMatch: false,
+		},
+		{
+			name:          "Context lines",
+			input:         "=== test.txt ===\nline1\nline2\nERROR\nline4\nline5",
+			filter:        "error",
+			context:       1,
+			expectMatch:   true,
+			expectedLines: 4, // header + line2 + ERROR + line4
+		},
+		{
+			name:          "Context stops at file boundary",
+			input:         "=== file1.txt ===\nline1\nERROR\n=== file2.txt ===\nline2",
+			filter:        "error",
+			context:       2,
+			expectMatch:   true,
+			expectedLines: 3, // header + line1 + ERROR (stops at boundary)
+		},
+		{
+			name:        "Header not matched",
+			input:       "=== ERROR.txt ===\nline1",
+			filter:      "error",
+			expectMatch: false, // "error" is only in header, not in content
+		},
+		{
+			name:          "Multiple matches with overlapping context",
+			input:         "=== test.txt ===\nline1\nERROR1\nline3\nERROR2\nline5",
+			filter:        "error",
+			context:       1,
+			expectMatch:   true,
+			expectedLines: 6, // header + all content (context overlaps)
+		},
+		{
+			name:          "Matches across multiple files",
+			input:         "=== file1.txt ===\nok\nERROR1\n=== file2.txt ===\nok\nERROR2",
+			filter:        "error",
+			context:       0,
+			expectMatch:   true,
+			expectedLines: 4, // 2 headers + 2 matches
+		},
+		{
+			name:          "Empty filter returns all lines",
+			input:         "=== test.txt ===\nline1\nline2",
+			filter:        "",
+			context:       0,
+			expectMatch:   true,
+			expectedLines: 3,
+		},
+		{
+			name:          "Nil options returns all lines",
+			input:         "=== test.txt ===\nline1\nline2",
+			filter:        "",
+			filterRegex:   "",
+			context:       0,
+			expectMatch:   true,
+			expectedLines: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := parseLogLines(tt.input)
+
+			var opts *LogFilterOptions
+			if tt.filter != "" || tt.filterRegex != "" {
+				opts = &LogFilterOptions{
+					Filter:       tt.filter,
+					FilterRegex:  tt.filterRegex,
+					ContextLines: tt.context,
+				}
+			}
+
+			result, err := filterLogLines(lines, opts)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+
+			if !tt.expectMatch {
+				assert.Nil(t, result)
+				return
+			}
+
+			assert.NotNil(t, result)
+			assert.Equal(t, tt.expectedLines, len(result))
+		})
+	}
+}
+
+func TestLinesToString(t *testing.T) {
+	tests := []struct {
+		name     string
+		lines    []logLine
+		expected string
+	}{
+		{
+			name:     "Empty slice",
+			lines:    []logLine{},
+			expected: "",
+		},
+		{
+			name: "Single line",
+			lines: []logLine{
+				{content: "hello"},
+			},
+			expected: "hello",
+		},
+		{
+			name: "Multiple lines",
+			lines: []logLine{
+				{content: "line1"},
+				{content: "line2"},
+				{content: "line3"},
+			},
+			expected: "line1\nline2\nline3",
+		},
+		{
+			name: "With header",
+			lines: []logLine{
+				{content: "=== test.txt ===", isHeader: true},
+				{content: "content"},
+			},
+			expected: "=== test.txt ===\ncontent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := linesToString(tt.lines)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestFilterIntegration(t *testing.T) {
+	// Test the full flow: parse -> filter -> convert back to string
+	input := `=== job1/step1.txt ===
+2024-01-01 10:00:00 Starting build...
+2024-01-01 10:00:01 ERROR: compilation failed
+2024-01-01 10:00:02 Build failed
+=== job1/step2.txt ===
+2024-01-01 10:00:03 Running tests...
+2024-01-01 10:00:04 All tests passed`
+
+	tests := []struct {
+		name     string
+		filter   string
+		regex    string
+		context  int
+		contains []string
+		excludes []string
+	}{
+		{
+			name:     "Filter for ERROR",
+			filter:   "error",
+			contains: []string{"ERROR: compilation failed", "=== job1/step1.txt ==="},
+			excludes: []string{"Starting build", "Running tests", "=== job1/step2.txt ==="},
+		},
+		{
+			name:     "Filter for ERROR with context",
+			filter:   "error",
+			context:  1,
+			contains: []string{"Starting build", "ERROR: compilation failed", "Build failed"},
+			excludes: []string{"Running tests"},
+		},
+		{
+			name:     "Regex for timestamps",
+			regex:    "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}",
+			contains: []string{"Starting build", "ERROR", "Running tests"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := parseLogLines(input)
+			opts := &LogFilterOptions{
+				Filter:       tt.filter,
+				FilterRegex:  tt.regex,
+				ContextLines: tt.context,
+			}
+
+			filtered, err := filterLogLines(lines, opts)
+			assert.NoError(t, err)
+			assert.NotNil(t, filtered)
+
+			result := linesToString(filtered)
+
+			for _, s := range tt.contains {
+				assert.Contains(t, result, s, "should contain: %s", s)
+			}
+			for _, s := range tt.excludes {
+				assert.NotContains(t, result, s, "should not contain: %s", s)
+			}
+		})
+	}
+}
+
 // Helper function to test line splitting logic in isolation
 func TestSplitLines(t *testing.T) {
 	tests := []struct {
