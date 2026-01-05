@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -69,9 +70,33 @@ func Load(configPath string) (*Config, error) {
 	return &cfg, nil
 }
 
+// getTokenFromGHCLI attempts to get the GitHub token from the gh CLI
+func getTokenFromGHCLI() (string, error) {
+	cmd := exec.Command("gh", "auth", "token")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get token from gh auth: %w", err)
+	}
+	token := strings.TrimSpace(string(output))
+	if token == "" {
+		return "", fmt.Errorf("gh auth token returned empty token")
+	}
+	return token, nil
+}
+
 func (c *Config) Validate() error {
 	if c.Token == "" {
-		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable or 'token' in config file")
+		// Try to get token from gh CLI
+		if token, err := getTokenFromGHCLI(); err == nil {
+			c.Token = token
+			log.Infof("Obtained GitHub token from gh CLI")
+		} else {
+			log.Warnf("Could not get token from gh CLI: %v", err)
+		}
+	}
+
+	if c.Token == "" {
+		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable, use 'gh auth login', or set 'token' in config file")
 	}
 	if c.RepoOwner == "" {
 		return fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
