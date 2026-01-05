@@ -2,9 +2,7 @@ package config
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -84,10 +82,9 @@ func TestLoad_DefaultValues(t *testing.T) {
 
 func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
-		name                 string
-		cfg                  Config
-		wantError            bool
-		skipIfTokenAvailable bool
+		name      string
+		cfg       Config
+		wantError bool
 	}{
 		{
 			name: "valid config",
@@ -105,8 +102,7 @@ func TestConfig_Validate(t *testing.T) {
 				RepoOwner: "owner",
 				RepoName:  "repo",
 			},
-			wantError:            true,
-			skipIfTokenAvailable: true, // Skip if gh auth token or keychain has a token
+			wantError: true,
 		},
 		{
 			name: "missing owner",
@@ -130,17 +126,6 @@ func TestConfig_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Skip this test if a token is available from gh CLI or keychain
-			// and the test expects an error for missing token
-			if tt.skipIfTokenAvailable && tt.wantError {
-				// Check if gh auth token returns something
-				cmd := exec.Command("gh", "auth", "token")
-				output, err := cmd.Output()
-				if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-					t.Skip("Skipping test because gh auth token is available")
-				}
-			}
-
 			err := tt.cfg.Validate()
 			if tt.wantError {
 				assert.Error(t, err)
