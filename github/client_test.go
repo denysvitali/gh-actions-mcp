@@ -91,6 +91,20 @@ func TestInferRepoFromOrigin_SSH(t *testing.T) {
 			wantRepo:  "repo",
 			wantErr:   false,
 		},
+		{
+			name:      "SSH URL with extra slash after colon",
+			url:       "git@github.com:/owner/repo.git",
+			wantOwner: "owner",
+			wantRepo:  "repo",
+			wantErr:   false,
+		},
+		{
+			name:      "SSH URL with extra slash after colon without .git",
+			url:       "git@github.com:/owner/repo",
+			wantOwner: "owner",
+			wantRepo:  "repo",
+			wantErr:   false,
+		},
 	}
 
 	for _, tt := range tests {
