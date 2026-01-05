@@ -84,7 +84,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Token == "" {
-		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable, or set 'token' in config file")
+		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable, set 'token' in config file, or run 'gh auth login' on macOS")
 	}
 	if c.RepoOwner == "" {
 		return fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")

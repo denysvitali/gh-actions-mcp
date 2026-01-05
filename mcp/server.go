@@ -48,7 +48,7 @@ func (s *MCPServer) getLogLimit() int {
 // formatAuthError formats an error message with authentication context
 func (s *MCPServer) formatAuthError(err error, msg string) string {
 	if config.IsAuthenticationError(err) {
-		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set (or run 'gh auth login' on macOS) and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
 	}
 	return fmt.Sprintf("%s: %v", msg, err)
 }

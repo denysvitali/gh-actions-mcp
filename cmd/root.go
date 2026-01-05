@@ -38,7 +38,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file path")
 	rootCmd.PersistentFlags().StringVarP(&repoOwner, "repo-owner", "o", "", "repository owner")
 	rootCmd.PersistentFlags().StringVarP(&repoName, "repo-name", "r", "", "repository name")
-	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "GitHub token (or use GITHUB_TOKEN env var)")
+	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "GitHub token (or use GITHUB_TOKEN env var, or macOS keychain)")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "l", "info", "log level (debug, info, warn, error)")
 
 	// Infer repo from git origin
@@ -55,10 +55,15 @@ This server can:
 - List workflows
 - Trigger, cancel, and rerun workflows
 
-Configure using:
-- Environment variable: GITHUB_TOKEN
+Token sources (in order of precedence):
+1. --token flag
+2. GITHUB_TOKEN environment variable
+3. Config file token field
+4. macOS Keychain (if authenticated via 'gh auth login')
+
+Other configuration:
 - Config file (--config or default locations)
-- Command line flags (--repo-owner, --repo-name, --token)
+- Command line flags (--repo-owner, --repo-name)
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Set log level

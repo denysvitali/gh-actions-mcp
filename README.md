@@ -23,17 +23,27 @@ make install
 
 ## Configuration
 
-### Environment Variables
+### Authentication
 
-- `GITHUB_TOKEN` - GitHub personal access token (required)
-- `GH_TOKEN` - Alternative env var name (also supported)
+The server requires a GitHub personal access token. Token sources (in order of precedence):
+
+1. `--token` command line flag
+2. `GITHUB_TOKEN` environment variable
+3. `token` field in config file
+4. macOS Keychain (automatic, if you've authenticated with `gh auth login`)
+
+#### macOS Keychain Integration
+
+On macOS, if no token is provided via the above methods, the server will automatically attempt to retrieve your GitHub token from the system keychain. This works seamlessly if you've previously authenticated using the GitHub CLI (`gh auth login`).
+
+No additional configuration is required - just run `gh auth login` once and the token will be available to this MCP server.
 
 ### Config File
 
 Create a `config.yaml` file:
 
 ```yaml
-token: your_github_token
+token: your_github_token  # Optional if using GITHUB_TOKEN env var or macOS keychain
 repo_owner: your_username
 repo_name: your_repo
 log_level: info
@@ -92,6 +102,8 @@ Add to your `claude_desktop_config.json`:
   }
 }
 ```
+
+**Note for macOS users:** If you've authenticated with `gh auth login`, you can omit the `env` block entirely - the token will be retrieved from your keychain automatically.
 
 ## Available Tools
 
