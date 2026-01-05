@@ -1,9 +1,6 @@
 package cmd
 
 import (
-	"bufio"
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -82,8 +79,8 @@ Other configuration:
 		// Create MCP server
 		mcpServer := mcp.NewMCPServer(cfg, log)
 
-		// Run stdio transport
-		return runStdio(mcpServer.GetServer())
+		// Run stdio transport using the library's built-in handler
+		return server.ServeStdio(mcpServer.GetServer())
 	},
 }
 
@@ -180,43 +177,6 @@ func inferRepoFromGit(cfg *config.Config) error {
 
 	log.Infof("Inferred repository from git: %s/%s", owner, repo)
 	return nil
-}
-
-func runStdio(srv *server.MCPServer) error {
-	ctx := context.Background()
-	reader := bufio.NewReader(os.Stdin)
-
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err.Error() == "EOF" {
-				return nil
-			}
-			return err
-		}
-
-		// Remove trailing newline
-		if len(line) > 0 && line[len(line)-1] == '\n' {
-			line = line[:len(line)-1]
-		}
-
-		if len(line) == 0 {
-			continue
-		}
-
-		response := srv.HandleMessage(ctx, line)
-
-		// Marshal and write response
-		respBytes, err := json.Marshal(response)
-		if err != nil {
-			return fmt.Errorf("failed to marshal response: %w", err)
-		}
-
-		_, err = os.Stdout.Write(append(respBytes, '\n'))
-		if err != nil {
-			return fmt.Errorf("failed to write response: %w", err)
-		}
-	}
 }
 
 func Execute() {
