@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__gh-actions-mcp__get_actions_status",
+      "mcp__gh-actions-mcp__get_workflow_logs",
+      "mcp__gh-actions-mcp__get_workflow_runs",
+      "Bash(go build:*)",
+      "Bash(go doc:*)",
+      "Bash(go install:*)",
+      "Bash(go get:*)",
+      "Bash(go test:*)"
+    ]
+  }
+}
