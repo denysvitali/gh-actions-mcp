@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-git/go-git/v5"
 	"github.com/google/go-github/v69/github"
 	"github.com/sirupsen/logrus"
 )
@@ -78,6 +80,31 @@ func workflowRunFromGitHub(run *github.WorkflowRun) *WorkflowRun {
 		RunNumber:  run.GetRunNumber(),
 		WorkflowID: run.GetWorkflowID(),
 	}
+}
+
+// GetCurrentBranch attempts to detect the current git branch from the working directory.
+// Returns empty string if not in a git repository, in detached HEAD state, or on error.
+func GetCurrentBranch() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	repo, err := git.PlainOpen(wd)
+	if err != nil {
+		return "", fmt.Errorf("not in a git repository: %w", err)
+	}
+
+	head, err := repo.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	if !head.Name().IsBranch() {
+		return "", fmt.Errorf("HEAD is detached (not on a branch)")
+	}
+
+	return string(head.Name().Short()), nil
 }
 
 type ActionsStatus struct {
@@ -286,10 +313,16 @@ func (c *Client) GetWorkflowRun(ctx context.Context, runID int64) (*WorkflowRun,
 	return workflowRunFromGitHub(run), nil
 }
 
-func (c *Client) GetWorkflowRuns(ctx context.Context, workflowID int64) ([]*WorkflowRun, error) {
-	runs, _, err := c.gh.Actions.ListWorkflowRunsByID(ctx, c.owner, c.repo, workflowID, &github.ListWorkflowRunsOptions{
+func (c *Client) GetWorkflowRuns(ctx context.Context, workflowID int64, branch string) ([]*WorkflowRun, error) {
+	opts := &github.ListWorkflowRunsOptions{
 		ListOptions: github.ListOptions{PerPage: 50},
-	})
+	}
+
+	if branch != "" {
+		opts.Branch = branch
+	}
+
+	runs, _, err := c.gh.Actions.ListWorkflowRunsByID(ctx, c.owner, c.repo, workflowID, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflow runs for workflow %d: %w", workflowID, err)
 	}

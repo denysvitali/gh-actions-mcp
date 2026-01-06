@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -136,6 +137,15 @@ func TestMCPServerTools(t *testing.T) {
 
 	server := NewMCPServer(cfg, logger)
 
+	// Helper to create a CallToolRequest from args
+	makeRequest := func(args map[string]interface{}) mcp.CallToolRequest {
+		return mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Arguments: args,
+			},
+		}
+	}
+
 	// Test that tools return expected error types for missing args
 	testCases := []struct {
 		name   string
@@ -222,17 +232,17 @@ func TestMCPServerTools(t *testing.T) {
 
 			switch tc.name {
 			case "get_actions_status with empty args":
-				result, err = server.getActionsStatus(tc.args)
+				result, err = server.getActionsStatus(context.Background(), makeRequest(tc.args))
 			case "list_workflows with empty args":
-				result, err = server.listWorkflows(tc.args)
+				result, err = server.listWorkflows(context.Background(), makeRequest(tc.args))
 			case "get_workflow_runs missing workflow_id":
-				result, err = server.getWorkflowRuns(tc.args)
+				result, err = server.getWorkflowRuns(context.Background(), makeRequest(tc.args))
 			case "trigger_workflow missing workflow_id":
-				result, err = server.triggerWorkflow(tc.args)
+				result, err = server.triggerWorkflow(context.Background(), makeRequest(tc.args))
 			case "cancel_workflow_run missing run_id":
-				result, err = server.cancelWorkflowRun(tc.args)
+				result, err = server.cancelWorkflowRun(context.Background(), makeRequest(tc.args))
 			case "rerun_workflow missing run_id":
-				result, err = server.rerunWorkflow(tc.args)
+				result, err = server.rerunWorkflow(context.Background(), makeRequest(tc.args))
 			}
 
 			assert.NoError(t, err)
@@ -256,7 +266,7 @@ func TestGetActionsStatusWithMockData(t *testing.T) {
 	server := NewMCPServer(cfg, logger)
 
 	// Call with empty args - should get an error from GitHub API
-	result, err := server.getActionsStatus(map[string]interface{}{})
+	result, err := server.getActionsStatus(context.Background(), mcp.CallToolRequest{})
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	// The result should contain an error since the token is invalid
@@ -309,7 +319,7 @@ func TestContextHandling(t *testing.T) {
 	// All methods should accept context and work with empty args
 	methods := []struct {
 		name string
-		fn   func(map[string]interface{}) (*mcp.CallToolResult, error)
+		fn   func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
 	}{
 		{"get_actions_status", server.getActionsStatus},
 		{"list_workflows", server.listWorkflows},
@@ -321,7 +331,7 @@ func TestContextHandling(t *testing.T) {
 
 	for _, m := range methods {
 		t.Run(m.name, func(t *testing.T) {
-			result, err := m.fn(map[string]interface{}{})
+			result, err := m.fn(context.Background(), mcp.CallToolRequest{})
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
 		})

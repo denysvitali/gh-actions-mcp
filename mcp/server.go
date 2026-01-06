@@ -134,6 +134,9 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("Maximum number of runs to return (default: 10)"),
 			mcp.DefaultNumber(10),
 		),
+		mcp.WithString("branch",
+			mcp.Description("Filter runs by branch (default: auto-detect from current git repository)"),
+		),
 	), s.getWorkflowRuns)
 
 	// Tool: trigger_workflow
@@ -270,12 +273,26 @@ func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolReq
 		}
 	}
 
+	// Extract branch parameter or auto-detect
+	branch := ""
+	if b, ok := request.GetArguments()["branch"].(string); ok && b != "" {
+		branch = b
+	} else {
+		// Try to auto-detect branch from git repository
+		if detectedBranch, err := github.GetCurrentBranch(); err == nil {
+			branch = detectedBranch
+			s.log.Debugf("Auto-detected branch: %s", branch)
+		} else {
+			s.log.Debugf("Could not auto-detect branch: %v (continuing without branch filter)", err)
+		}
+	}
+
 	// Try to parse as ID first
 	var workflowIDInt int64
 	var runs []*github.WorkflowRun
 
 	if id, err := strconv.ParseInt(workflowID, 10, 64); err == nil {
-		runs, err = s.client.GetWorkflowRuns(ctx, id)
+		runs, err = s.client.GetWorkflowRuns(ctx, id, branch)
 		if err != nil {
 			return errorResult(s.formatAuthError(err, "failed to get workflow runs")), nil
 		}
@@ -297,7 +314,7 @@ func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolReq
 			return errorResult(fmt.Sprintf("workflow %s not found", workflowID)), nil
 		}
 
-		runs, err = s.client.GetWorkflowRuns(ctx, workflowIDInt)
+		runs, err = s.client.GetWorkflowRuns(ctx, workflowIDInt, branch)
 		if err != nil {
 			return errorResult(fmt.Sprintf("failed to get workflow runs: %v", err)), nil
 		}
