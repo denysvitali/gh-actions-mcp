@@ -1,5 +1,6 @@
 # Binary
 gh-actions-mcp
+bin/
 
 # Go
 *.exe
