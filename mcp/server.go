@@ -75,7 +75,7 @@ func formatWorkflowRun(run *github.WorkflowRun) string {
 		icon = "⊘"
 	}
 	return fmt.Sprintf("%s Run #%d | %s | %s | %s | %s\n    ID: %d | %s",
-		icon, run.RunNumber, run.Status, run.Conclusion, run.Branch, run.Event, run.ID)
+		icon, run.RunNumber, run.Status, run.Conclusion, run.Branch, run.Event, run.ID, run.URL)
 }
 
 // formatWorkflowRunDetail formats a workflow run with full details
