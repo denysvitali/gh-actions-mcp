@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
@@ -51,6 +52,122 @@ func (s *MCPServer) formatAuthError(err error, msg string) string {
 		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set (or run 'gh auth login' on macOS) and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
 	}
 	return fmt.Sprintf("%s: %v", msg, err)
+}
+
+// formatCommitInfo formats commit information with clear section header
+func formatCommitInfo(commit *github.CommitInfo) string {
+	if commit == nil {
+		return "Commit: (not available)"
+	}
+	return fmt.Sprintf("Commit: %s\n  Author: %s\n  Date:   %s\n  %s",
+		commit.SHA, commit.Author, commit.Date, commit.Msg)
+}
+
+// formatWorkflowRun formats a single workflow run with clear field labels
+func formatWorkflowRun(run *github.WorkflowRun) string {
+	icon := "○"
+	switch run.Conclusion {
+	case "success":
+		icon = "✓"
+	case "failure":
+		icon = "✗"
+	case "cancelled":
+		icon = "⊘"
+	}
+	return fmt.Sprintf("%s Run #%d | %s | %s | %s | %s\n    ID: %d | %s",
+		icon, run.RunNumber, run.Status, run.Conclusion, run.Branch, run.Event, run.ID)
+}
+
+// formatWorkflowRunDetail formats a workflow run with full details
+func formatWorkflowRunDetail(run *github.WorkflowRun) string {
+	return fmt.Sprintf("Run #%d\n  ID:         %d\n  Status:     %s\n  Conclusion: %s\n  Branch:     %s\n  Event:      %s\n  Actor:      %s\n  Created:    %s\n  URL:        %s",
+		run.RunNumber, run.ID, run.Status, run.Conclusion, run.Branch, run.Event, run.Actor, run.CreatedAt, run.URL)
+}
+
+// formatActionsStatus formats the actions status with clear section headers
+func formatActionsStatus(status *github.ActionsStatus, commit *github.CommitInfo, branch string) string {
+	var sb strings.Builder
+
+	// Header with repo info
+	sb.WriteString("GitHub Actions Status\n")
+	sb.WriteString(strings.Repeat("=", 40))
+	sb.WriteString("\n\n")
+
+	// Commit context (if available)
+	if commit != nil {
+		sb.WriteString("Last Commit\n")
+		sb.WriteString(strings.Repeat("-", 20))
+		sb.WriteString("\n")
+		sb.WriteString(formatCommitInfo(commit))
+		if branch != "" {
+			sb.WriteString(fmt.Sprintf("\n  Branch: %s", branch))
+		}
+		sb.WriteString("\n\n")
+	}
+
+	// Statistics summary
+	sb.WriteString("Statistics\n")
+	sb.WriteString(strings.Repeat("-", 20))
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  Total workflows:  %d\n", status.TotalWorkflows))
+	sb.WriteString(fmt.Sprintf("  Total runs:       %d\n", status.TotalRuns))
+	sb.WriteString(fmt.Sprintf("  Success:          %d\n", status.SuccessfulRuns))
+	sb.WriteString(fmt.Sprintf("  Failed:           %d\n", status.FailedRuns))
+	sb.WriteString(fmt.Sprintf("  In progress:      %d\n", status.InProgressRuns))
+	sb.WriteString(fmt.Sprintf("  Queued:           %d\n", status.QueuedRuns))
+	sb.WriteString("\n")
+
+	// Recent runs
+	if len(status.RecentRuns) > 0 {
+		sb.WriteString("Recent Workflow Runs\n")
+		sb.WriteString(strings.Repeat("-", 20))
+		sb.WriteString("\n")
+		for _, run := range status.RecentRuns {
+			sb.WriteString(formatWorkflowRun(run))
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// formatWorkflowRuns formats workflow runs with clear section headers
+func formatWorkflowRuns(runs []*github.WorkflowRun, workflowName, branch string, commit *github.CommitInfo) string {
+	var sb strings.Builder
+
+	sb.WriteString("Workflow Runs")
+	sb.WriteString("\n")
+	sb.WriteString(strings.Repeat("=", 40))
+	sb.WriteString("\n\n")
+
+	// Context header
+	sb.WriteString("Context\n")
+	sb.WriteString(strings.Repeat("-", 20))
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  Workflow: %s\n", workflowName))
+	if branch != "" {
+		sb.WriteString(fmt.Sprintf("  Branch:   %s\n", branch))
+	}
+	if commit != nil {
+		sb.WriteString(fmt.Sprintf("  Commit:   %s - %s\n", commit.SHA, commit.Msg))
+	}
+	sb.WriteString("\n")
+
+	// Runs section
+	sb.WriteString(fmt.Sprintf("Runs (%d total)\n", len(runs)))
+	sb.WriteString(strings.Repeat("-", 20))
+	sb.WriteString("\n")
+
+	if len(runs) == 0 {
+		sb.WriteString("  No runs found\n")
+	} else {
+		for _, run := range runs {
+			sb.WriteString(formatWorkflowRun(run))
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
 }
 
 // jsonResult returns a successful JSON response
@@ -228,7 +345,12 @@ func (s *MCPServer) getActionsStatus(ctx context.Context, request mcp.CallToolRe
 		return errorResult(s.formatAuthError(err, "failed to get actions status")), nil
 	}
 
-	return jsonResult(status)
+	// Get commit and branch for context
+	commit, _ := github.GetLastCommit()
+	branch, _ := github.GetCurrentBranch()
+
+	formattedOutput := formatActionsStatus(status, commit, branch)
+	return textResult(formattedOutput), nil
 }
 
 func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -289,12 +411,25 @@ func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolReq
 
 	// Try to parse as ID first
 	var workflowIDInt int64
+	var workflowName string
 	var runs []*github.WorkflowRun
 
 	if id, err := strconv.ParseInt(workflowID, 10, 64); err == nil {
+		workflowIDInt = id
 		runs, err = s.client.GetWorkflowRuns(ctx, id, branch)
 		if err != nil {
 			return errorResult(s.formatAuthError(err, "failed to get workflow runs")), nil
+		}
+		// Get workflow name
+		workflows, _ := s.client.GetWorkflows(ctx)
+		for _, w := range workflows {
+			if w.ID == id {
+				workflowName = w.Name
+				break
+			}
+		}
+		if workflowName == "" {
+			workflowName = workflowID
 		}
 	} else {
 		// Try by name - list workflows and find by name
@@ -306,6 +441,7 @@ func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolReq
 		for _, w := range workflows {
 			if w.Name == workflowID {
 				workflowIDInt = w.ID
+				workflowName = w.Name
 				break
 			}
 		}
@@ -329,7 +465,11 @@ func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolReq
 		result = append(result, run)
 	}
 
-	return jsonResult(result)
+	// Get commit info for context
+	commit, _ := github.GetLastCommit()
+
+	formattedOutput := formatWorkflowRuns(result, workflowName, branch, commit)
+	return textResult(formattedOutput), nil
 }
 
 func (s *MCPServer) triggerWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -350,7 +490,18 @@ func (s *MCPServer) triggerWorkflow(ctx context.Context, request mcp.CallToolReq
 		return errorResult(s.formatAuthError(err, "failed to trigger workflow")), nil
 	}
 
-	return textResult(fmt.Sprintf("Successfully triggered workflow %s on branch %s", workflowID, ref)), nil
+	// Get commit info for context
+	commit, _ := github.GetLastCommit()
+	branch, _ := github.GetCurrentBranch()
+
+	output := fmt.Sprintf("Workflow triggered: %s\n  Branch: %s\n  %s",
+		workflowID, ref, formatCommitInfo(commit))
+
+	if branch != "" && branch != ref {
+		output += fmt.Sprintf("\n  Note: current branch is '%s'", branch)
+	}
+
+	return textResult(output), nil
 }
 
 func (s *MCPServer) cancelWorkflowRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
