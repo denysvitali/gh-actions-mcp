@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -292,7 +291,7 @@ func TestWorkflowIDParsing(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.input, func(t *testing.T) {
-			id, err := parseWorkflowID(tc.input)
+			id, err := github.ParseWorkflowID(tc.input)
 			if tc.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -338,8 +337,144 @@ func TestContextHandling(t *testing.T) {
 	}
 }
 
-// Helper function that exists in client.go
-func parseWorkflowID(id string) (int64, error) {
-	return strconv.ParseInt(id, 10, 64)
+// Test error scenarios for MCP server tools
+func TestMCPServerErrorScenarios(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	t.Run("Authentication error formatting", func(t *testing.T) {
+		cfg := &config.Config{
+			Token:     "invalid-token",
+			RepoOwner: "owner",
+			RepoName:  "repo",
+		}
+
+		server := NewMCPServer(cfg, logger)
+
+		// Test that auth errors are properly formatted
+		result, err := server.getActionsStatus(context.Background(), mcp.CallToolRequest{})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+
+		content, ok := result.Content[0].(mcp.TextContent)
+		assert.True(t, ok)
+		// Should mention authentication or the original error
+		assert.Contains(t, content.Text, "failed")
+	})
+
+	t.Run("Invalid workflow ID formats", func(t *testing.T) {
+		cfg := &config.Config{
+			Token:     "test-token",
+			RepoOwner: "test-owner",
+			RepoName:  "test-repo",
+		}
+
+		server := NewMCPServer(cfg, logger)
+
+		// Test with invalid workflow ID
+		result, err := server.getWorkflowRuns(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Arguments: map[string]interface{}{
+					"workflow_id": "invalid-workflow-12345",
+				},
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Should get an error result
+		content, ok := result.Content[0].(mcp.TextContent)
+		assert.True(t, ok)
+		assert.NotEmpty(t, content.Text)
+	})
+
+	t.Run("Invalid run ID", func(t *testing.T) {
+		cfg := &config.Config{
+			Token:     "test-token",
+			RepoOwner: "test-owner",
+			RepoName:  "test-repo",
+		}
+
+		server := NewMCPServer(cfg, logger)
+
+		// Test cancel with invalid run ID
+		result, err := server.cancelWorkflowRun(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Arguments: map[string]interface{}{
+					"run_id": float64(999999999),
+				},
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Should get an error result
+		content, ok := result.Content[0].(mcp.TextContent)
+		assert.True(t, ok)
+		assert.NotEmpty(t, content.Text)
+	})
+}
+
+// Test getWorkflowLogs error scenarios
+func TestGetWorkflowLogsErrorScenarios(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+
+	cfg := &config.Config{
+		Token:     "test-token",
+		RepoOwner: "test-owner",
+		RepoName:  "test-repo",
+	}
+
+	server := NewMCPServer(cfg, logger)
+
+	t.Run("Missing run_id", func(t *testing.T) {
+		result, err := server.getWorkflowLogs(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Arguments: map[string]interface{}{},
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+
+		content, ok := result.Content[0].(mcp.TextContent)
+		assert.True(t, ok)
+		assert.Contains(t, content.Text, "run_id is required")
+	})
+
+	t.Run("Mutually exclusive filters", func(t *testing.T) {
+		result, err := server.getWorkflowLogs(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Arguments: map[string]interface{}{
+					"run_id":       float64(123),
+					"filter":       "error",
+					"filter_regex": "[Ee]rror",
+				},
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+
+		content, ok := result.Content[0].(mcp.TextContent)
+		assert.True(t, ok)
+		assert.Contains(t, content.Text, "mutually exclusive")
+	})
+
+	t.Run("Invalid run ID", func(t *testing.T) {
+		result, err := server.getWorkflowLogs(context.Background(), mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Arguments: map[string]interface{}{
+					"run_id": float64(999999999),
+				},
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, result)
+
+		// Should get an error result (not found or auth error)
+		content, ok := result.Content[0].(mcp.TextContent)
+		assert.True(t, ok)
+		assert.NotEmpty(t, content.Text)
+	})
 }
 

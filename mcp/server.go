@@ -216,7 +216,13 @@ func NewMCPServer(cfg *config.Config, log *logrus.Logger) *MCPServer {
 
 	github.SetLogger(log)
 
-	ghClient := github.NewClient(cfg.Token, cfg.RepoOwner, cfg.RepoName)
+	// Use configured per-page limit or default to 50
+	perPageLimit := cfg.PerPageLimit
+	if perPageLimit <= 0 {
+		perPageLimit = 50
+	}
+
+	ghClient := github.NewClientWithPerPage(cfg.Token, cfg.RepoOwner, cfg.RepoName, perPageLimit)
 
 	mcpServer := &MCPServer{
 		srv:    s,
@@ -426,51 +432,16 @@ func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolReq
 		}
 	}
 
-	// Try to parse as ID first
-	var workflowIDInt int64
-	var workflowName string
-	var runs []*github.WorkflowRun
+	// Resolve workflow ID and name using the shared helper
+	workflowIDInt, workflowName, err := s.client.ResolveWorkflowID(ctx, workflowID)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, "failed to resolve workflow ID")), nil
+	}
 
-	if id, err := strconv.ParseInt(workflowID, 10, 64); err == nil {
-		workflowIDInt = id
-		runs, err = s.client.GetWorkflowRuns(ctx, id, branch)
-		if err != nil {
-			return errorResult(s.formatAuthError(err, "failed to get workflow runs")), nil
-		}
-		// Get workflow name
-		workflows, _ := s.client.GetWorkflows(ctx)
-		for _, w := range workflows {
-			if w.ID == id {
-				workflowName = w.Name
-				break
-			}
-		}
-		if workflowName == "" {
-			workflowName = workflowID
-		}
-	} else {
-		// Try by name - list workflows and find by name
-		workflows, err := s.client.GetWorkflows(ctx)
-		if err != nil {
-			return errorResult(s.formatAuthError(err, "failed to get workflows")), nil
-		}
-
-		for _, w := range workflows {
-			if w.Name == workflowID {
-				workflowIDInt = w.ID
-				workflowName = w.Name
-				break
-			}
-		}
-
-		if workflowIDInt == 0 {
-			return errorResult(fmt.Sprintf("workflow %s not found", workflowID)), nil
-		}
-
-		runs, err = s.client.GetWorkflowRuns(ctx, workflowIDInt, branch)
-		if err != nil {
-			return errorResult(fmt.Sprintf("failed to get workflow runs: %v", err)), nil
-		}
+	// Get workflow runs
+	runs, err := s.client.GetWorkflowRuns(ctx, workflowIDInt, branch)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, "failed to get workflow runs")), nil
 	}
 
 	// Convert to our type with limit

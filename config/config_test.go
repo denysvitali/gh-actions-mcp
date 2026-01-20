@@ -153,3 +153,125 @@ func TestSetLogger(t *testing.T) {
 	SetLogger(logger)
 	// This test mainly ensures the function doesn't panic
 }
+
+func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
+	// Test that GITHUB_* prefixed environment variables work
+	tests := []struct {
+		name         string
+		envVars      map[string]string
+		expectedToken string
+		expectedOwner string
+		expectedRepo  string
+	}{
+		{
+			name: "GITHUB_* prefix works",
+			envVars: map[string]string{
+				"GITHUB_TOKEN":       "github-token",
+				"GITHUB_REPO_OWNER":  "github-owner",
+				"GITHUB_REPO_NAME":   "github-repo",
+			},
+			expectedToken: "github-token",
+			expectedOwner: "github-owner",
+			expectedRepo:  "github-repo",
+		},
+		{
+			name: "GH_* prefix works",
+			envVars: map[string]string{
+				"GH_TOKEN":       "gh-token",
+				"GH_REPO_OWNER":  "gh-owner",
+				"GH_REPO_NAME":   "gh-repo",
+			},
+			expectedToken: "gh-token",
+			expectedOwner: "gh-owner",
+			expectedRepo:  "gh-repo",
+		},
+		{
+			name: "GITHUB_* takes precedence over GH_*",
+			envVars: map[string]string{
+				"GITHUB_TOKEN":       "github-token",
+				"GH_TOKEN":           "gh-token",
+				"GITHUB_REPO_OWNER":  "github-owner",
+				"GH_REPO_OWNER":      "gh-owner",
+				"GITHUB_REPO_NAME":   "github-repo",
+				"GH_REPO_NAME":       "gh-repo",
+			},
+			expectedToken: "github-token",
+			expectedOwner: "github-owner",
+			expectedRepo:  "github-repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set environment variables
+			for k, v := range tt.envVars {
+				os.Setenv(k, v)
+			}
+			defer func() {
+				for k := range tt.envVars {
+					os.Unsetenv(k)
+				}
+			}()
+
+			cfg, err := Load("")
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.expectedToken, cfg.Token)
+			assert.Equal(t, tt.expectedOwner, cfg.RepoOwner)
+			assert.Equal(t, tt.expectedRepo, cfg.RepoName)
+		})
+	}
+}
+
+func TestLoad_PerPageLimit(t *testing.T) {
+	tests := []struct {
+		name           string
+		configContent  string
+		envValue       string
+		expectedLimit  int
+	}{
+		{
+			name: "default per_page_limit",
+			configContent: "",
+			envValue:      "",
+			expectedLimit: 50,
+		},
+		{
+			name: "per_page_limit from config file",
+			configContent: "per_page_limit: 100",
+			envValue:      "",
+			expectedLimit: 100,
+		},
+		{
+			name: "GITHUB_PER_PAGE_LIMIT env var",
+			configContent: "",
+			envValue:      "75",
+			expectedLimit: 75,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+
+			if tt.configContent != "" {
+				err := os.WriteFile(configPath, []byte(tt.configContent), 0644)
+				require.NoError(t, err)
+			} else {
+				err := os.WriteFile(configPath, []byte(""), 0644)
+				require.NoError(t, err)
+			}
+
+			if tt.envValue != "" {
+				os.Setenv("GITHUB_PER_PAGE_LIMIT", tt.envValue)
+				defer os.Unsetenv("GITHUB_PER_PAGE_LIMIT")
+			}
+
+			cfg, err := Load(configPath)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.expectedLimit, cfg.PerPageLimit)
+		})
+	}
+}

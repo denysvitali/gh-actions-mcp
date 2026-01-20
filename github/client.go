@@ -26,19 +26,29 @@ func SetLogger(l *logrus.Logger) {
 }
 
 type Client struct {
-	owner string
-	repo  string
-	gh    *github.Client
+	owner        string
+	repo         string
+	gh           *github.Client
+	perPageLimit int
 }
 
 func NewClient(token, owner, repo string) *Client {
+	return NewClientWithPerPage(token, owner, repo, 50)
+}
+
+// NewClientWithPerPage creates a new GitHub client with a custom per-page limit
+func NewClientWithPerPage(token, owner, repo string, perPageLimit int) *Client {
+	if perPageLimit <= 0 {
+		perPageLimit = 50 // sensible default
+	}
 	hc := &http.Client{}
 	gh := github.NewClient(hc)
 	gh = gh.WithAuthToken(token)
 	return &Client{
-		owner: owner,
-		repo:  repo,
-		gh:    gh,
+		owner:        owner,
+		repo:         repo,
+		gh:           gh,
+		perPageLimit: perPageLimit,
 	}
 }
 
@@ -101,7 +111,8 @@ func GetCurrentBranch() (string, error) {
 	}
 
 	if !head.Name().IsBranch() {
-		return "", fmt.Errorf("HEAD is detached (not on a branch)")
+		log.Warnf("HEAD is detached (not on a branch)")
+		return "", nil
 	}
 
 	return string(head.Name().Short()), nil
@@ -301,7 +312,7 @@ func (c *Client) GetActionsStatus(ctx context.Context, limit int) (*ActionsStatu
 	status := &ActionsStatus{}
 
 	// Get workflows
-	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: 100})
+	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: c.perPageLimit})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflows: %w", err)
 	}
@@ -354,7 +365,7 @@ func (c *Client) GetWorkflowRun(ctx context.Context, runID int64) (*WorkflowRun,
 
 func (c *Client) GetWorkflowRuns(ctx context.Context, workflowID int64, branch string) ([]*WorkflowRun, error) {
 	opts := &github.ListWorkflowRunsOptions{
-		ListOptions: github.ListOptions{PerPage: 50},
+		ListOptions: github.ListOptions{PerPage: c.perPageLimit},
 	}
 
 	if branch != "" {
@@ -375,7 +386,7 @@ func (c *Client) GetWorkflowRuns(ctx context.Context, workflowID int64, branch s
 }
 
 func (c *Client) GetWorkflows(ctx context.Context) ([]*Workflow, error) {
-	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: 100})
+	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: c.perPageLimit})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflows: %w", err)
 	}
@@ -394,36 +405,19 @@ func (c *Client) GetWorkflows(ctx context.Context) ([]*Workflow, error) {
 }
 
 func (c *Client) TriggerWorkflow(ctx context.Context, workflowID string, ref string) error {
-	// Try to parse as ID first
-	if id, err := parseWorkflowID(workflowID); err == nil {
-		_, err := c.gh.Actions.CreateWorkflowDispatchEventByID(ctx, c.owner, c.repo, id, github.CreateWorkflowDispatchEventRequest{
-			Ref: ref,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to trigger workflow %s: %w", workflowID, err)
-		}
-		return nil
-	}
-
-	// Try by name
-	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: 100})
+	// Use the shared helper to resolve workflow ID
+	id, _, err := c.ResolveWorkflowID(ctx, workflowID)
 	if err != nil {
-		return fmt.Errorf("failed to list workflows: %w", err)
+		return fmt.Errorf("failed to trigger workflow %s: %w", workflowID, err)
 	}
 
-	for _, w := range workflows.Workflows {
-		if w.GetName() == workflowID || w.GetPath() == workflowID {
-			_, err := c.gh.Actions.CreateWorkflowDispatchEventByID(ctx, c.owner, c.repo, w.GetID(), github.CreateWorkflowDispatchEventRequest{
-				Ref: ref,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to trigger workflow %s: %w", workflowID, err)
-			}
-			return nil
-		}
+	_, err = c.gh.Actions.CreateWorkflowDispatchEventByID(ctx, c.owner, c.repo, id, github.CreateWorkflowDispatchEventRequest{
+		Ref: ref,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to trigger workflow %s: %w", workflowID, err)
 	}
-
-	return fmt.Errorf("workflow %s not found", workflowID)
+	return nil
 }
 
 func (c *Client) CancelWorkflowRun(ctx context.Context, runID int64) error {
@@ -652,6 +646,15 @@ func (c *Client) GetRepoInfo() (string, string) {
 
 // InferRepoFromOrigin attempts to extract owner/repo from a git remote URL
 func InferRepoFromOrigin(remoteURL string) (owner, repo string, err error) {
+	// Handle bare owner/repo format (e.g., "owner/repo")
+	if !strings.Contains(remoteURL, "://") && !strings.Contains(remoteURL, "@") {
+		path := strings.TrimSuffix(remoteURL, ".git")
+		repoParts := strings.Split(path, "/")
+		if len(repoParts) == 2 {
+			return repoParts[0], repoParts[1], nil
+		}
+	}
+
 	// Handle SSH format: git@github.com:owner/repo.git
 	// Also handles malformed URLs like git@github.com:/owner/repo.git (extra slash)
 	if strings.Contains(remoteURL, "git@") {
@@ -681,6 +684,41 @@ func InferRepoFromOrigin(remoteURL string) (owner, repo string, err error) {
 	return "", "", fmt.Errorf("could not parse owner/repo from URL: %s", remoteURL)
 }
 
-func parseWorkflowID(id string) (int64, error) {
+// ResolveWorkflowID resolves a workflow identifier (ID or name) to a numeric ID and name.
+// Returns the workflow ID, name, and an error if the workflow is not found.
+func (c *Client) ResolveWorkflowID(ctx context.Context, workflowID string) (int64, string, error) {
+	// Try to parse as ID first
+	if id, err := ParseWorkflowID(workflowID); err == nil {
+		// Look up the workflow to get its name
+		workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: c.perPageLimit})
+		if err != nil {
+			return 0, "", fmt.Errorf("failed to list workflows: %w", err)
+		}
+		for _, w := range workflows.Workflows {
+			if w.GetID() == id {
+				return id, w.GetName(), nil
+			}
+		}
+		// ID exists but workflow not found - return ID as name
+		return id, workflowID, nil
+	}
+
+	// Try by name - list workflows and find by name
+	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: c.perPageLimit})
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to list workflows: %w", err)
+	}
+
+	for _, w := range workflows.Workflows {
+		if w.GetName() == workflowID || w.GetPath() == workflowID {
+			return w.GetID(), w.GetName(), nil
+		}
+	}
+
+	return 0, "", fmt.Errorf("workflow %s not found", workflowID)
+}
+
+// ParseWorkflowID parses a workflow ID string into an int64
+func ParseWorkflowID(id string) (int64, error) {
 	return strconv.ParseInt(id, 10, 64)
 }

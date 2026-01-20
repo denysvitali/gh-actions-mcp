@@ -246,6 +246,133 @@ func TestTokenIsSentInRequest(t *testing.T) {
 	}
 }
 
+// Test error scenarios
+func TestNewClientWithPerPage(t *testing.T) {
+	tests := []struct {
+		name         string
+		token        string
+		owner        string
+		repo         string
+		perPageLimit int
+		expectedLimit int
+	}{
+		{
+			name:         "valid limit",
+			token:        "token",
+			owner:        "owner",
+			repo:         "repo",
+			perPageLimit: 100,
+			expectedLimit: 100,
+		},
+		{
+			name:         "zero limit uses default",
+			token:        "token",
+			owner:        "owner",
+			repo:         "repo",
+			perPageLimit: 0,
+			expectedLimit: 50,
+		},
+		{
+			name:         "negative limit uses default",
+			token:        "token",
+			owner:        "owner",
+			repo:         "repo",
+			perPageLimit: -10,
+			expectedLimit: 50,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClientWithPerPage(tt.token, tt.owner, tt.repo, tt.perPageLimit)
+			assert.NotNil(t, client)
+			assert.Equal(t, tt.expectedLimit, client.perPageLimit)
+		})
+	}
+}
+
+func TestClient_GetWorkflowRun_ErrorHandling(t *testing.T) {
+	// This test verifies error handling when the API returns an error
+	client := NewClient("invalid-token", "owner", "repo")
+
+	// Try to get a non-existent workflow run
+	ctx := context.Background()
+	_, err := client.GetWorkflowRun(ctx, 999999999)
+
+	// Should return an error (authentication or not found)
+	assert.Error(t, err)
+}
+
+func TestClient_TriggerWorkflow_ErrorHandling(t *testing.T) {
+	tests := []struct {
+		name        string
+		workflowID  string
+		ref         string
+		expectErr   bool
+		errContains string
+	}{
+		{
+			name:        "invalid workflow ID with bad token",
+			workflowID:  "nonexistent-workflow",
+			ref:         "main",
+			expectErr:   true,
+			errContains: "failed to trigger workflow",
+		},
+		{
+			name:       "empty workflow ID",
+			workflowID: "",
+			ref:        "main",
+			expectErr:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewClient("test-token", "owner", "repo")
+			err := client.TriggerWorkflow(context.Background(), tt.workflowID, tt.ref)
+
+			if tt.expectErr {
+				assert.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+			}
+		})
+	}
+}
+
+func TestClient_APIErrors(t *testing.T) {
+	client := NewClient("invalid-token", "owner", "repo")
+	ctx := context.Background()
+
+	t.Run("GetActionsStatus with invalid token", func(t *testing.T) {
+		_, err := client.GetActionsStatus(ctx, 10)
+		// Should get an authentication or network error
+		assert.Error(t, err)
+	})
+
+	t.Run("GetWorkflows with invalid token", func(t *testing.T) {
+		_, err := client.GetWorkflows(ctx)
+		// Should get an authentication or network error
+		assert.Error(t, err)
+	})
+
+	t.Run("GetWorkflowRuns with invalid workflow", func(t *testing.T) {
+		_, err := client.GetWorkflowRuns(ctx, 999999999, "main")
+		assert.Error(t, err)
+	})
+
+	t.Run("CancelWorkflowRun with invalid run ID", func(t *testing.T) {
+		err := client.CancelWorkflowRun(ctx, 999999999)
+		assert.Error(t, err)
+	})
+
+	t.Run("RerunWorkflowRun with invalid run ID", func(t *testing.T) {
+		err := client.RerunWorkflowRun(ctx, 999999999)
+		assert.Error(t, err)
+	})
+}
+
 type roundTripperFunc func(*http.Request) *http.Response
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
