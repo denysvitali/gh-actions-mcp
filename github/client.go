@@ -446,7 +446,8 @@ func (c *Client) RerunWorkflowRun(ctx context.Context, runID int64) error {
 // The logs can be filtered by substring or regex pattern, with optional context lines.
 // After filtering, results can be limited by line count using head or tail parameters.
 // If both head and tail are specified, tail takes precedence.
-func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail int, filterOpts *LogFilterOptions) (string, error) {
+// If noHeaders is true, file headers (=== filename ===) are not included.
+func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
 	// Get the log archive (GitHub returns a redirect to a ZIP file)
 	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
 	if err != nil {
@@ -524,11 +525,13 @@ func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail in
 		return logFiles[i].name < logFiles[j].name
 	})
 
-	// Combine all logs into a single string with headers
+	// Combine all logs into a single string with optional headers
 	var allLogs strings.Builder
 	for _, lf := range logFiles {
-		// Add a header for each file
-		allLogs.WriteString(fmt.Sprintf("=== %s ===\n", lf.name))
+		// Add a header for each file unless noHeaders is true
+		if !noHeaders {
+			allLogs.WriteString(fmt.Sprintf("=== %s ===\n", lf.name))
+		}
 		allLogs.WriteString(lf.data)
 		// Add newline if the file doesn't end with one
 		if !strings.HasSuffix(lf.data, "\n") {

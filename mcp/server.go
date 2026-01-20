@@ -172,6 +172,15 @@ func formatWorkflowRuns(runs []*github.WorkflowRun, workflowName, branch string,
 
 // jsonResult returns a successful JSON response
 func jsonResult(data interface{}) (*mcp.CallToolResult, error) {
+	d, err := json.Marshal(data)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(d)), nil
+}
+
+// jsonResultPretty returns a successful JSON response with pretty formatting
+func jsonResultPretty(data interface{}) (*mcp.CallToolResult, error) {
 	d, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to marshal: %v", err)), nil
@@ -238,6 +247,10 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("Maximum number of workflows to return (default: 10)"),
 			mcp.DefaultNumber(10),
 		),
+		mcp.WithString("format",
+			mcp.Description("Output format: compact (default, single-line JSON) or pretty (indented JSON)"),
+			mcp.DefaultString("compact"),
+		),
 	), s.listWorkflows)
 
 	// Tool: get_workflow_runs
@@ -246,13 +259,6 @@ func (s *MCPServer) registerTools() {
 		mcp.WithString("workflow_id",
 			mcp.Description("The workflow ID or name (e.g., '12345678' or 'CI')"),
 			mcp.Required(),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of runs to return (default: 10)"),
-			mcp.DefaultNumber(10),
-		),
-		mcp.WithString("branch",
-			mcp.Description("Filter runs by branch (default: auto-detect from current git repository)"),
 		),
 	), s.getWorkflowRuns)
 
@@ -326,6 +332,9 @@ func (s *MCPServer) registerTools() {
 		mcp.WithNumber("context",
 			mcp.Description("Number of lines to show before and after each match (like grep -C). Only applies when filter or filter_regex is used. Default: 0"),
 		),
+		mcp.WithBoolean("no_headers",
+			mcp.Description("Don't print file headers (=== filename ===)"),
+		),
 	), s.getWorkflowLogs)
 }
 
@@ -362,7 +371,12 @@ func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolReque
 		}
 	}
 
-	s.log.Infof("Listing workflows for %s/%s (limit: %d)", s.config.RepoOwner, s.config.RepoName, limit)
+	format := "compact"
+	if f, ok := request.GetArguments()["format"].(string); ok {
+		format = f
+	}
+
+	s.log.Infof("Listing workflows for %s/%s (limit: %d, format: %s)", s.config.RepoOwner, s.config.RepoName, limit, format)
 
 	workflows, err := s.client.GetWorkflows(ctx)
 	if err != nil {
@@ -378,6 +392,9 @@ func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolReque
 		result = append(result, w)
 	}
 
+	if format == "pretty" {
+		return jsonResultPretty(result)
+	}
 	return jsonResult(result)
 }
 
@@ -566,20 +583,19 @@ func (s *MCPServer) waitWorkflowRun(ctx context.Context, request mcp.CallToolReq
 		status = "timed_out"
 	}
 
-	output := fmt.Sprintf("Workflow run %d completed:\n"+
-		"  Name: %s\n"+
-		"  Status: %s\n"+
-		"  Conclusion: %s\n"+
-		"  Branch: %s\n"+
-		"  Event: %s\n"+
-		"  Actor: %s\n"+
-		"  URL: %s\n"+
-		"  Elapsed: %v\n"+
-		"  Polls: %d",
-		run.ID, run.Name, status, run.Conclusion, run.Branch, run.Event,
-		run.Actor, run.URL, result.Elapsed, result.PollCount)
-
-	return textResult(output), nil
+	output := map[string]interface{}{
+		"id":         run.ID,
+		"name":       run.Name,
+		"status":     status,
+		"conclusion": run.Conclusion,
+		"branch":     run.Branch,
+		"event":      run.Event,
+		"actor":      run.Actor,
+		"url":        run.URL,
+		"elapsed":    result.Elapsed.String(),
+		"polls":      result.PollCount,
+	}
+	return jsonResult(output)
 }
 
 func (s *MCPServer) getWorkflowLogs(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -622,8 +638,13 @@ func (s *MCPServer) getWorkflowLogs(ctx context.Context, request mcp.CallToolReq
 		contextLines = int(c)
 	}
 
-	s.log.Infof("Getting workflow logs for run %d on %s/%s (head: %d, tail: %d, filter: %q, filter_regex: %q, context: %d)",
-		runID, s.config.RepoOwner, s.config.RepoName, head, tail, filter, filterRegex, contextLines)
+	noHeaders := false
+	if nh, ok := request.GetArguments()["no_headers"].(bool); ok && nh {
+		noHeaders = true
+	}
+
+	s.log.Infof("Getting workflow logs for run %d on %s/%s (head: %d, tail: %d, filter: %q, filter_regex: %q, context: %d, no_headers: %v)",
+		runID, s.config.RepoOwner, s.config.RepoName, head, tail, filter, filterRegex, contextLines, noHeaders)
 
 	// Create filter options
 	var filterOpts *github.LogFilterOptions
@@ -635,7 +656,7 @@ func (s *MCPServer) getWorkflowLogs(ctx context.Context, request mcp.CallToolReq
 		}
 	}
 
-	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, filterOpts)
+	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, noHeaders, filterOpts)
 	if err != nil {
 		return errorResult(s.formatAuthError(err, "failed to get workflow logs")), nil
 	}

@@ -121,6 +121,51 @@ func TestInferRepoFromOrigin_SSH(t *testing.T) {
 	}
 }
 
+func TestInferRepoFromOrigin_BareFormat(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		wantOwner string
+		wantRepo  string
+		wantErr   bool
+	}{
+		{
+			name:      "Bare owner/repo format",
+			url:       "palantir/policy-bot",
+			wantOwner: "palantir",
+			wantRepo:  "policy-bot",
+			wantErr:   false,
+		},
+		{
+			name:      "Bare owner/repo with underscore",
+			url:       "owner_name/repo_name",
+			wantOwner: "owner_name",
+			wantRepo:  "repo_name",
+			wantErr:   false,
+		},
+		{
+			name:      "Bare owner/repo with hyphen",
+			url:       "my-org/my-repo",
+			wantOwner: "my-org",
+			wantRepo:  "my-repo",
+			wantErr:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, err := InferRepoFromOrigin(tt.url)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.wantOwner, owner)
+				assert.Equal(t, tt.wantRepo, repo)
+			}
+		})
+	}
+}
+
 func TestInferRepoFromOrigin_Invalid(t *testing.T) {
 	tests := []struct {
 		name string
