@@ -192,8 +192,10 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("For element=logs: return the first N lines of logs"),
 		),
 		mcp.WithNumber("tail",
-			mcp.Description("For element=logs: return the last N lines of logs (default: 50)"),
-			mcp.DefaultNumber(50),
+			mcp.Description("For element=logs: return the last N lines of logs"),
+		),
+		mcp.WithNumber("offset",
+			mcp.Description("For element=logs: skip first N lines before returning (0-based)"),
 		),
 		mcp.WithString("filter",
 			mcp.Description("For element=logs: filter logs to lines containing this substring (case-insensitive)"),
@@ -544,9 +546,14 @@ func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string
 		head = int(h)
 	}
 
-	tail := s.getLogLimit()
+	tail := 0
 	if t, ok := args["tail"].(float64); ok && t > 0 {
 		tail = int(t)
+	}
+
+	offset := 0
+	if o, ok := args["offset"].(float64); ok && o > 0 {
+		offset = int(o)
 	}
 
 	filter := ""
@@ -579,7 +586,7 @@ func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string
 		ContextLines: contextLines,
 	}
 
-	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, noHeaders, filterOpts)
+	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, offset, noHeaders, filterOpts)
 	if err != nil {
 		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for run %d", runID))), nil
 	}
@@ -593,9 +600,14 @@ func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string
 		head = int(h)
 	}
 
-	tail := s.getLogLimit()
+	tail := 0
 	if t, ok := args["tail"].(float64); ok && t > 0 {
 		tail = int(t)
+	}
+
+	offset := 0
+	if o, ok := args["offset"].(float64); ok && o > 0 {
+		offset = int(o)
 	}
 
 	filter := ""
@@ -628,7 +640,7 @@ func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string
 		ContextLines: contextLines,
 	}
 
-	logs, err := s.client.GetWorkflowJobLogs(ctx, jobID, head, tail, noHeaders, filterOpts)
+	logs, err := s.client.GetWorkflowJobLogs(ctx, jobID, head, tail, offset, noHeaders, filterOpts)
 	if err != nil {
 		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for job %d", jobID))), nil
 	}

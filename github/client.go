@@ -578,10 +578,12 @@ func (c *Client) RerunWorkflowRun(ctx context.Context, runID int64) error {
 
 // GetWorkflowLogs retrieves the logs for a workflow run and returns them as a string.
 // The logs can be filtered by substring or regex pattern, with optional context lines.
-// After filtering, results can be limited by line count using head or tail parameters.
-// If both head and tail are specified, tail takes precedence.
+// After filtering, results can be limited by line count using head, tail, and offset parameters.
+// - offset: skip first N lines (0-based)
+// - head: return at most N lines from the offset (if specified)
+// - tail: return the last N lines (takes precedence over head+offset)
 // If noHeaders is true, file headers (=== filename ===) are not included.
-func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
 	// Get the log archive (GitHub returns a redirect to a ZIP file)
 	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
 	if err != nil {
@@ -688,24 +690,28 @@ func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail in
 		logStr = linesToString(filteredLines)
 	}
 
-	// Apply line limiting
+	// Apply line limiting (offset, head, tail)
+	lines := strings.Split(logStr, "\n")
+
+	// Apply offset first (skip lines from the beginning)
+	if offset > 0 && offset < len(lines) {
+		lines = lines[offset:]
+	}
+
+	// Apply tail (last N lines - takes precedence over head)
 	if tail > 0 {
-		lines := strings.Split(logStr, "\n")
 		if len(lines) > tail {
 			lines = lines[len(lines)-tail:]
-			logStr = strings.Join(lines, "\n") + "\n"
-		} else {
-			logStr = logStr + "\n"
 		}
 	} else if head > 0 {
-		lines := strings.Split(logStr, "\n")
+		// Apply head (at most N lines)
 		if len(lines) > head {
 			lines = lines[:head]
-			logStr = strings.Join(lines, "\n") + "\n"
-		} else {
-			logStr = logStr + "\n"
 		}
-	} else {
+	}
+
+	logStr = strings.Join(lines, "\n")
+	if logStr != "" {
 		logStr = logStr + "\n"
 	}
 
@@ -968,7 +974,7 @@ func (c *Client) GetWorkflowJobs(ctx context.Context, runID int64, filter string
 }
 
 // GetWorkflowJobLogs retrieves logs for a specific job
-func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
 	// Get the log archive
 	url, resp, err := c.gh.Actions.GetWorkflowJobLogs(ctx, c.owner, c.repo, jobID, 10)
 	if err != nil {
@@ -1068,24 +1074,28 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 		logStr = linesToString(filteredLines)
 	}
 
-	// Apply line limiting
+	// Apply line limiting (offset, head, tail)
+	lines := strings.Split(logStr, "\n")
+
+	// Apply offset first (skip lines from the beginning)
+	if offset > 0 && offset < len(lines) {
+		lines = lines[offset:]
+	}
+
+	// Apply tail (last N lines - takes precedence over head)
 	if tail > 0 {
-		lines := strings.Split(logStr, "\n")
 		if len(lines) > tail {
 			lines = lines[len(lines)-tail:]
-			logStr = strings.Join(lines, "\n") + "\n"
-		} else {
-			logStr = logStr + "\n"
 		}
 	} else if head > 0 {
-		lines := strings.Split(logStr, "\n")
+		// Apply head (at most N lines)
 		if len(lines) > head {
 			lines = lines[:head]
-			logStr = strings.Join(lines, "\n") + "\n"
-		} else {
-			logStr = logStr + "\n"
 		}
-	} else {
+	}
+
+	logStr = strings.Join(lines, "\n")
+	if logStr != "" {
 		logStr = logStr + "\n"
 	}
 
