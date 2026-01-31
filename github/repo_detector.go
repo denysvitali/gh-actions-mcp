@@ -244,28 +244,6 @@ func getWorkingDir() (string, error) {
 	return os.Getwd()
 }
 
-// getGitRoot finds the root of the git repository
-func getGitRoot() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	repo, err := git.PlainOpen(wd)
-	if err != nil {
-		return wd, nil // Return current dir if not a git repo
-	}
-
-	// Get the worktree path
-	wt, err := repo.Worktree()
-	if err != nil {
-		return wd, nil
-	}
-
-	filesys := wt.Filesystem
-	return filesys.Root(), nil
-}
-
 // FindRemoteByName finds a specific remote by name in the repository
 func FindRemoteByName(remoteName string) (string, error) {
 	wd, err := os.Getwd()
