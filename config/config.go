@@ -17,6 +17,7 @@ type Config struct {
 	DefaultLimit  int    `mapstructure:"default_limit"`
 	DefaultLogLen int    `mapstructure:"default_log_len"`
 	PerPageLimit  int    `mapstructure:"per_page_limit"`
+	DefaultFormat string `mapstructure:"default_format"` // "minimal", "compact", "full"
 }
 
 var log = logrus.New()
@@ -34,6 +35,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("default_limit", 10)
 	v.SetDefault("default_log_len", 100)
 	v.SetDefault("per_page_limit", 50)
+	v.SetDefault("default_format", "compact")
 
 	// Environment variables - support both GITHUB_* and GH_* prefixes
 	// GITHUB_* prefix takes precedence over GH_* prefix for backward compatibility
@@ -44,6 +46,7 @@ func Load(configPath string) (*Config, error) {
 	_ = v.BindEnv("default_limit", "GITHUB_DEFAULT_LIMIT", "GH_DEFAULT_LIMIT")
 	_ = v.BindEnv("default_log_len", "GITHUB_DEFAULT_LOG_LEN", "GH_DEFAULT_LOG_LEN")
 	_ = v.BindEnv("per_page_limit", "GITHUB_PER_PAGE_LIMIT", "GH_PER_PAGE_LIMIT")
+	_ = v.BindEnv("default_format", "GITHUB_DEFAULT_FORMAT", "GH_DEFAULT_FORMAT")
 
 	// Config file
 	if configPath != "" {

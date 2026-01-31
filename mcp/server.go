@@ -24,8 +24,8 @@ type MCPServer struct {
 
 // Default limits for output control
 const (
-	DefaultListLimit = 10  // Default max items for lists
-	DefaultLogLines  = 100 // Default max lines for logs
+	DefaultListLimit = 5   // Default max items for lists (reduced from 10 for token efficiency)
+	DefaultLogLines  = 50  // Default max lines for logs (reduced from 100 for token efficiency)
 )
 
 // Helper functions to reduce repetition
@@ -237,135 +237,158 @@ func NewMCPServer(cfg *config.Config, log *logrus.Logger) *MCPServer {
 }
 
 func (s *MCPServer) registerTools() {
-	// Tool: get_actions_status
-	s.srv.AddTool(mcp.NewTool("get_actions_status",
-		mcp.WithDescription("Get the current status of GitHub Actions for the repository, including recent workflow runs and statistics"),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of recent runs to return (default: 10)"),
-			mcp.DefaultNumber(10),
-		),
-	), s.getActionsStatus)
-
 	// Tool: list_workflows
 	s.srv.AddTool(mcp.NewTool("list_workflows",
 		mcp.WithDescription("List all workflows available in the repository"),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of workflows to return (default: 10)"),
-			mcp.DefaultNumber(10),
+			mcp.Description("Maximum number of workflows to return (default: 5)"),
+			mcp.DefaultNumber(5),
 		),
 		mcp.WithString("format",
-			mcp.Description("Output format: compact (default, single-line JSON) or pretty (indented JSON)"),
+			mcp.Description("Output format: compact (default, single-line JSON), pretty (indented JSON), or full (detailed)"),
 			mcp.DefaultString("compact"),
 		),
 	), s.listWorkflows)
 
-	// Tool: get_workflow_runs
-	s.srv.AddTool(mcp.NewTool("get_workflow_runs",
-		mcp.WithDescription("Get recent runs for a specific workflow"),
-		mcp.WithString("workflow_id",
-			mcp.Description("The workflow ID or name (e.g., '12345678' or 'CI')"),
-			mcp.Required(),
+	// Tool: list_runs
+	s.srv.AddTool(mcp.NewTool("list_runs",
+		mcp.WithDescription("List workflow runs with comprehensive filtering options"),
+		mcp.WithNumber("workflow_id",
+			mcp.Description("Optional: The workflow ID or name (e.g., '12345678' or 'CI') to filter by"),
 		),
-	), s.getWorkflowRuns)
+		mcp.WithString("branch",
+			mcp.Description("Optional: Branch to filter by (default: auto-detect from git repository)"),
+		),
+		mcp.WithString("status",
+			mcp.Description("Optional: Status to filter by (queued, in_progress, completed, etc.)"),
+		),
+		mcp.WithString("conclusion",
+			mcp.Description("Optional: Conclusion to filter by (success, failure, neutral, cancelled, etc.)"),
+		),
+		mcp.WithNumber("per_page",
+			mcp.Description("Number of results per page (default: 5)"),
+			mcp.DefaultNumber(5),
+		),
+		mcp.WithString("created_after",
+			mcp.Description("Optional: ISO 8601 date string to filter runs created after this time"),
+		),
+		mcp.WithString("event",
+			mcp.Description("Optional: Event to filter by (push, pull_request, etc.)"),
+		),
+		mcp.WithString("actor",
+			mcp.Description("Optional: GitHub username to filter by"),
+		),
+		mcp.WithString("format",
+			mcp.Description("Output format: minimal (basic fields), compact (default, most fields), or full (all fields)"),
+			mcp.DefaultString("compact"),
+		),
+	), s.listRuns)
 
-	// Tool: trigger_workflow
-	s.srv.AddTool(mcp.NewTool("trigger_workflow",
-		mcp.WithDescription("Trigger a workflow to run manually"),
-		mcp.WithString("workflow_id",
-			mcp.Description("The workflow ID or name (e.g., '12345678' or 'CI')"),
+	// Tool: get_run
+	s.srv.AddTool(mcp.NewTool("get_run",
+		mcp.WithDescription("Get detailed information about a workflow run, including jobs, logs, or artifacts"),
+		mcp.WithNumber("run_id",
+			mcp.Description("The workflow run ID"),
 			mcp.Required(),
 		),
+		mcp.WithString("element",
+			mcp.Description("Element to retrieve: info (default), jobs, logs, or artifacts"),
+			mcp.DefaultString("info"),
+		),
+		mcp.WithNumber("job_id",
+			mcp.Description("For element=logs: specific job ID to get logs for"),
+		),
+		mcp.WithBoolean("per_job",
+			mcp.Description("For element=logs: get logs per-job instead of all logs combined"),
+		),
+		mcp.WithNumber("attempt_number",
+			mcp.Description("For element=jobs: attempt number for the jobs (default: latest)"),
+		),
+		mcp.WithNumber("head",
+			mcp.Description("For element=logs: return the first N lines of logs"),
+		),
+		mcp.WithNumber("tail",
+			mcp.Description("For element=logs: return the last N lines of logs (default: 50)"),
+			mcp.DefaultNumber(50),
+		),
+		mcp.WithString("filter",
+			mcp.Description("For element=logs: filter logs to lines containing this substring (case-insensitive)"),
+		),
+		mcp.WithString("filter_regex",
+			mcp.Description("For element=logs: filter logs to lines matching this regex pattern"),
+		),
+		mcp.WithNumber("context",
+			mcp.Description("For element=logs: number of lines to show before and after each match (default: 0)"),
+			mcp.DefaultNumber(0),
+		),
+		mcp.WithBoolean("no_headers",
+			mcp.Description("For element=logs: don't print file headers (=== filename ===)"),
+		),
+		mcp.WithString("format",
+			mcp.Description("For element=info, jobs, artifacts: output format (compact/full, default: compact)"),
+			mcp.DefaultString("compact"),
+		),
+	), s.getRun)
+
+	// Tool: get_check_status
+	s.srv.AddTool(mcp.NewTool("get_check_status",
+		mcp.WithDescription("Get check run status for a specific commit/branch/tag"),
 		mcp.WithString("ref",
-			mcp.Description("The branch or tag to run the workflow on (default: main)"),
-			mcp.DefaultString("main"),
+			mcp.Description("Git ref (commit SHA, branch name, or tag) - default: HEAD of current branch"),
 		),
-	), s.triggerWorkflow)
-
-	// Tool: cancel_workflow_run
-	s.srv.AddTool(mcp.NewTool("cancel_workflow_run",
-		mcp.WithDescription("Cancel a running workflow"),
-		mcp.WithNumber("run_id",
-			mcp.Description("The workflow run ID to cancel"),
-			mcp.Required(),
+		mcp.WithString("check_name",
+			mcp.Description("Optional: filter by specific check name"),
 		),
-	), s.cancelWorkflowRun)
-
-	// Tool: rerun_workflow
-	s.srv.AddTool(mcp.NewTool("rerun_workflow",
-		mcp.WithDescription("Rerun a failed workflow"),
-		mcp.WithNumber("run_id",
-			mcp.Description("The workflow run ID to rerun"),
-			mcp.Required(),
+		mcp.WithString("status",
+			mcp.Description("Optional: filter by status (queued, in_progress, completed)"),
 		),
-	), s.rerunWorkflow)
+		mcp.WithString("filter",
+			mcp.Description("Return latest check runs (default) or all check runs for the ref"),
+			mcp.DefaultString("latest"),
+		),
+		mcp.WithString("format",
+			mcp.Description("Output format: summary (default), compact, or full"),
+			mcp.DefaultString("summary"),
+		),
+	), s.getCheckStatus)
 
-	// Tool: wait_workflow_run
-	s.srv.AddTool(mcp.NewTool("wait_workflow_run",
-		mcp.WithDescription("Wait for a workflow run to complete, polling continuously for status updates"),
+	// Tool: wait_for_run
+	s.srv.AddTool(mcp.NewTool("wait_for_run",
+		mcp.WithDescription("Wait silently for a workflow run to complete (no output during polling)"),
 		mcp.WithNumber("run_id",
 			mcp.Description("The workflow run ID to wait for"),
 			mcp.Required(),
 		),
-		mcp.WithNumber("poll_interval",
-			mcp.Description("Polling interval in seconds (default: 5)"),
-			mcp.DefaultNumber(5),
+		mcp.WithNumber("timeout_minutes",
+			mcp.Description("Maximum time to wait in minutes (default: 30)"),
+			mcp.DefaultNumber(30),
 		),
-		mcp.WithNumber("timeout",
-			mcp.Description("Maximum time to wait in seconds (default: 600)"),
-			mcp.DefaultNumber(600),
-		),
-	), s.waitWorkflowRun)
+	), s.waitForRun)
 
-	// Tool: get_workflow_logs
-	s.srv.AddTool(mcp.NewTool("get_workflow_logs",
-		mcp.WithDescription("Get the logs for a specific workflow run, with optional filtering and line limiting"),
+	// Tool: wait_for_commit_checks
+	s.srv.AddTool(mcp.NewTool("wait_for_commit_checks",
+		mcp.WithDescription("Wait for all check runs for a commit to complete"),
+		mcp.WithString("ref",
+			mcp.Description("Git ref (commit SHA, branch name, or tag) - default: HEAD"),
+		),
+		mcp.WithNumber("timeout_minutes",
+			mcp.Description("Maximum time to wait in minutes (default: 30)"),
+			mcp.DefaultNumber(30),
+		),
+	), s.waitForCommitChecks)
+
+	// Tool: manage_run
+	s.srv.AddTool(mcp.NewTool("manage_run",
+		mcp.WithDescription("Manage a workflow run (cancel, rerun, or rerun failed jobs)"),
 		mcp.WithNumber("run_id",
-			mcp.Description("The workflow run ID to get logs for"),
+			mcp.Description("The workflow run ID to manage"),
 			mcp.Required(),
 		),
-		mcp.WithNumber("tail",
-			mcp.Description("Return the last N lines of logs (e.g., 100 for the last 100 lines)"),
+		mcp.WithString("action",
+			mcp.Description("Action to perform: cancel, rerun, or rerun_failed"),
+			mcp.Required(),
 		),
-		mcp.WithNumber("head",
-			mcp.Description("Return the first N lines of logs (e.g., 100 for the first 100 lines)"),
-		),
-		mcp.WithString("filter",
-			mcp.Description("Filter logs to lines containing this substring (case-insensitive). Mutually exclusive with filter_regex."),
-		),
-		mcp.WithString("filter_regex",
-			mcp.Description("Filter logs to lines matching this regular expression pattern. Mutually exclusive with filter."),
-		),
-		mcp.WithNumber("context",
-			mcp.Description("Number of lines to show before and after each match (like grep -C). Only applies when filter or filter_regex is used. Default: 0"),
-		),
-		mcp.WithBoolean("no_headers",
-			mcp.Description("Don't print file headers (=== filename ===)"),
-		),
-	), s.getWorkflowLogs)
-}
-
-func (s *MCPServer) getActionsStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	limit := s.getLimit()
-
-	if l, ok := request.GetArguments()["limit"]; ok {
-		if n, err := strconv.Atoi(fmt.Sprintf("%.0f", l)); err == nil {
-			limit = n
-		}
-	}
-
-	s.log.Infof("Getting actions status for %s/%s (limit: %d)", s.config.RepoOwner, s.config.RepoName, limit)
-
-	status, err := s.client.GetActionsStatus(ctx, limit)
-	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to get actions status")), nil
-	}
-
-	// Get commit and branch for context
-	commit, _ := github.GetLastCommit()
-	branch, _ := github.GetCurrentBranch()
-
-	formattedOutput := formatActionsStatus(status, commit, branch)
-	return textResult(formattedOutput), nil
+	), s.manageRun)
 }
 
 func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -377,7 +400,7 @@ func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolReque
 		}
 	}
 
-	format := "compact"
+	format := s.getFormat()
 	if f, ok := request.GetArguments()["format"].(string); ok {
 		format = f
 	}
@@ -398,241 +421,505 @@ func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolReque
 		result = append(result, w)
 	}
 
-	if format == "pretty" {
+	switch format {
+	case "pretty", "full":
 		return jsonResultPretty(result)
+	default:
+		return jsonResult(result)
 	}
-	return jsonResult(result)
 }
 
-func (s *MCPServer) getWorkflowRuns(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	limit := s.getLimit()
+func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
 
-	workflowID, ok := request.GetArguments()["workflow_id"].(string)
-	if !ok || workflowID == "" {
-		return errorResult("workflow_id is required"), nil
+	// Build options
+	opts := &github.ListRunsOptions{
+		Per_page: s.getLimit(),
 	}
 
-	if l, ok := request.GetArguments()["limit"]; ok {
-		if n, err := strconv.Atoi(fmt.Sprintf("%.0f", l)); err == nil {
-			limit = n
+	if perPage, ok := args["per_page"].(float64); ok && perPage > 0 {
+		opts.Per_page = int(perPage)
+	}
+
+	if workflowIDStr, ok := args["workflow_id"].(string); ok && workflowIDStr != "" {
+		if workflowID, _, err := s.client.ResolveWorkflowID(ctx, workflowIDStr); err == nil {
+			opts.WorkflowID = &workflowID
 		}
 	}
 
-	// Extract branch parameter or auto-detect
-	branch := ""
-	if b, ok := request.GetArguments()["branch"].(string); ok && b != "" {
-		branch = b
+	if branch, ok := args["branch"].(string); ok && branch != "" {
+		opts.Branch = branch
 	} else {
-		// Try to auto-detect branch from git repository
+		// Auto-detect branch
 		if detectedBranch, err := github.GetCurrentBranch(); err == nil {
-			branch = detectedBranch
-			s.log.Debugf("Auto-detected branch: %s", branch)
-		} else {
-			s.log.Debugf("Could not auto-detect branch: %v (continuing without branch filter)", err)
+			opts.Branch = detectedBranch
+			s.log.Debugf("Auto-detected branch: %s", detectedBranch)
 		}
 	}
 
-	// Resolve workflow ID and name using the shared helper
-	workflowIDInt, workflowName, err := s.client.ResolveWorkflowID(ctx, workflowID)
-	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to resolve workflow ID")), nil
+	if status, ok := args["status"].(string); ok && status != "" {
+		opts.Status = status
 	}
 
-	// Get workflow runs
-	runs, err := s.client.GetWorkflowRuns(ctx, workflowIDInt, branch)
-	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to get workflow runs")), nil
+	if conclusion, ok := args["conclusion"].(string); ok && conclusion != "" {
+		opts.Conclusion = conclusion
 	}
 
-	// Convert to our type with limit
-	result := make([]*github.WorkflowRun, 0, limit)
-	for _, run := range runs {
-		if len(result) >= limit {
-			break
+	if createdAfter, ok := args["created_after"].(string); ok && createdAfter != "" {
+		opts.CreatedAfter = createdAfter
+	}
+
+	if event, ok := args["event"].(string); ok && event != "" {
+		opts.Event = event
+	}
+
+	if actor, ok := args["actor"].(string); ok && actor != "" {
+		opts.Actor = actor
+	}
+
+	format := s.getFormat()
+	if f, ok := args["format"].(string); ok {
+		format = f
+	}
+
+	s.log.Infof("Listing runs for %s/%s", s.config.RepoOwner, s.config.RepoName)
+
+	runs, err := s.client.ListRepositoryWorkflowRunsWithOptions(ctx, opts)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, "failed to list workflow runs")), nil
+	}
+
+	// Format output based on format parameter
+	switch format {
+	case "minimal":
+		result := make([]*github.WorkflowRunMinimal, 0, len(runs))
+		for _, r := range runs {
+			result = append(result, &github.WorkflowRunMinimal{
+				ID:         r.ID,
+				Name:       r.Name,
+				Status:     r.Status,
+				Conclusion: r.Conclusion,
+				CreatedAt:  r.CreatedAt,
+			})
 		}
-		result = append(result, run)
+		return jsonResult(result)
+	case "full":
+		result := make([]*github.WorkflowRunFull, 0, len(runs))
+		for _, r := range runs {
+			result = append(result, &github.WorkflowRunFull{
+				ID:          r.ID,
+				Name:        r.Name,
+				Status:      r.Status,
+				Conclusion:  r.Conclusion,
+				Branch:      r.Branch,
+				Event:       r.Event,
+				Actor:       r.Actor,
+				CreatedAt:   r.CreatedAt,
+				UpdatedAt:   r.UpdatedAt,
+				URL:         r.URL,
+				RunNumber:   r.RunNumber,
+				WorkflowID:  r.WorkflowID,
+				HeadSHA:     "",
+			})
+		}
+		return jsonResult(result)
+	default: // compact
+		result := make([]*github.WorkflowRunCompact, 0, len(runs))
+		for _, r := range runs {
+			result = append(result, &github.WorkflowRunCompact{
+				WorkflowRunMinimal: github.WorkflowRunMinimal{
+					ID:         r.ID,
+					Name:       r.Name,
+					Status:     r.Status,
+					Conclusion: r.Conclusion,
+					CreatedAt:  r.CreatedAt,
+				},
+				Branch: r.Branch,
+				SHA:    "",
+				Event:  r.Event,
+				Actor:  r.Actor,
+				URL:    r.URL,
+			})
+		}
+		return jsonResult(result)
 	}
-
-	// Get commit info for context
-	commit, _ := github.GetLastCommit()
-
-	formattedOutput := formatWorkflowRuns(result, workflowName, branch, commit)
-	return textResult(formattedOutput), nil
 }
 
-func (s *MCPServer) triggerWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	workflowID, ok := request.GetArguments()["workflow_id"].(string)
-	if !ok || workflowID == "" {
-		return errorResult("workflow_id is required"), nil
-	}
+func (s *MCPServer) getRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
 
-	ref := "main"
-	if r, ok := request.GetArguments()["ref"].(string); ok && r != "" {
-		ref = r
-	}
-
-	s.log.Infof("Triggering workflow %s on %s/%s (ref: %s)", workflowID, s.config.RepoOwner, s.config.RepoName, ref)
-
-	err := s.client.TriggerWorkflow(ctx, workflowID, ref)
-	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to trigger workflow")), nil
-	}
-
-	// Get commit info for context
-	commit, _ := github.GetLastCommit()
-	branch, _ := github.GetCurrentBranch()
-
-	output := fmt.Sprintf("Workflow triggered: %s\n  Branch: %s\n  %s",
-		workflowID, ref, formatCommitInfo(commit))
-
-	if branch != "" && branch != ref {
-		output += fmt.Sprintf("\n  Note: current branch is '%s'", branch)
-	}
-
-	return textResult(output), nil
-}
-
-func (s *MCPServer) cancelWorkflowRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	runID, ok := extractRunID(request.GetArguments())
+	runID, ok := extractRunID(args)
 	if !ok {
 		return errorResult("run_id is required"), nil
 	}
 
-	s.log.Infof("Cancelling workflow run %d on %s/%s", runID, s.config.RepoOwner, s.config.RepoName)
-
-	err := s.client.CancelWorkflowRun(ctx, runID)
-	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to cancel workflow run")), nil
+	element := "info"
+	if e, ok := args["element"].(string); ok {
+		element = e
 	}
 
-	return textResult(fmt.Sprintf("Successfully cancelled workflow run %d", runID)), nil
+	s.log.Infof("Getting run %d (element: %s)", runID, element)
+
+	switch element {
+	case "jobs":
+		return s.getRunJobs(ctx, runID, args)
+	case "logs":
+		return s.getRunLogs(ctx, runID, args)
+	case "artifacts":
+		return s.getRunArtifacts(ctx, runID, args)
+	default: // info
+		return s.getRunInfo(ctx, runID, args)
+	}
 }
 
-func (s *MCPServer) rerunWorkflow(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	runID, ok := extractRunID(request.GetArguments())
-	if !ok {
-		return errorResult("run_id is required"), nil
-	}
-
-	s.log.Infof("Rerunning workflow run %d on %s/%s", runID, s.config.RepoOwner, s.config.RepoName)
-
-	err := s.client.RerunWorkflowRun(ctx, runID)
+func (s *MCPServer) getRunInfo(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	run, err := s.client.GetWorkflowRun(ctx, runID)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to rerun workflow")), nil
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("Run ID %d not found", runID))), nil
 	}
 
-	return textResult(fmt.Sprintf("Successfully triggered rerun for workflow run %d", runID)), nil
+	format := s.getFormat()
+	if f, ok := args["format"].(string); ok {
+		format = f
+	}
+
+	switch format {
+	case "full":
+		result := &github.WorkflowRunFull{
+			ID:          run.ID,
+			Name:        run.Name,
+			Status:      run.Status,
+			Conclusion:  run.Conclusion,
+			Branch:      run.Branch,
+			Event:       run.Event,
+			Actor:       run.Actor,
+			CreatedAt:   run.CreatedAt,
+			UpdatedAt:   run.UpdatedAt,
+			URL:         run.URL,
+			RunNumber:   run.RunNumber,
+			WorkflowID:  run.WorkflowID,
+			HeadSHA:     "",
+		}
+		return jsonResult(result)
+	default: // compact
+		result := &github.WorkflowRunCompact{
+			WorkflowRunMinimal: github.WorkflowRunMinimal{
+				ID:         run.ID,
+				Name:       run.Name,
+				Status:     run.Status,
+				Conclusion: run.Conclusion,
+				CreatedAt:  run.CreatedAt,
+			},
+			Branch: run.Branch,
+			SHA:    "",
+			Event:  run.Event,
+			Actor:  run.Actor,
+			URL:    run.URL,
+		}
+		return jsonResult(result)
+	}
 }
 
-func (s *MCPServer) waitWorkflowRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	runID, ok := extractRunID(request.GetArguments())
-	if !ok {
-		return errorResult("run_id is required"), nil
+func (s *MCPServer) getRunJobs(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	filter := ""
+	if f, ok := args["filter"].(string); ok {
+		filter = f
 	}
 
-	pollInterval := 5
-	if p, ok := request.GetArguments()["poll_interval"].(float64); ok {
-		pollInterval = int(p)
+	attemptNumber := 0
+	if an, ok := args["attempt_number"].(float64); ok && an > 0 {
+		attemptNumber = int(an)
 	}
 
-	timeout := 600
-	if t, ok := request.GetArguments()["timeout"].(float64); ok {
-		timeout = int(t)
-	}
-
-	s.log.Infof("Waiting for workflow run %d on %s/%s (poll_interval: %ds, timeout: %ds)",
-		runID, s.config.RepoOwner, s.config.RepoName, pollInterval, timeout)
-
-	result, err := s.client.WaitForWorkflowRun(ctx, runID, pollInterval, timeout)
+	jobs, err := s.client.GetWorkflowJobs(ctx, runID, filter, attemptNumber)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to wait for workflow")), nil
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get jobs for run %d", runID))), nil
 	}
 
-	run := result.Run
-	status := "completed"
-	if result.TimedOut {
-		status = "timed_out"
+	format := s.getFormat()
+	if f, ok := args["format"].(string); ok {
+		format = f
 	}
 
-	output := map[string]interface{}{
-		"id":         run.ID,
-		"name":       run.Name,
-		"status":     status,
-		"conclusion": run.Conclusion,
-		"branch":     run.Branch,
-		"event":      run.Event,
-		"actor":      run.Actor,
-		"url":        run.URL,
-		"elapsed":    result.Elapsed.String(),
-		"polls":      result.PollCount,
+	if format == "full" {
+		return jsonResult(jobs)
 	}
-	return jsonResult(output)
+	return jsonResult(jobs)
 }
 
-func (s *MCPServer) getWorkflowLogs(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	runID, ok := extractRunID(request.GetArguments())
-	if !ok {
-		return errorResult("run_id is required"), nil
+func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	// Check if getting logs for a specific job
+	if jobIDFloat, ok := args["job_id"].(float64); ok {
+		jobID := int64(jobIDFloat)
+		return s.getJobLogs(ctx, jobID, args)
 	}
 
+	// Get workflow run logs
 	head := 0
-	if h, ok := request.GetArguments()["head"].(float64); ok && h > 0 {
+	if h, ok := args["head"].(float64); ok && h > 0 {
 		head = int(h)
 	}
 
-	tail := 0
-	if t, ok := request.GetArguments()["tail"].(float64); ok && t > 0 {
+	tail := s.getLogLimit()
+	if t, ok := args["tail"].(float64); ok && t > 0 {
 		tail = int(t)
-	} else if head == 0 {
-		// Apply default log limit when neither head nor tail is specified
-		tail = s.getLogLimit()
 	}
 
-	// Extract filter parameters
 	filter := ""
-	if f, ok := request.GetArguments()["filter"].(string); ok {
+	if f, ok := args["filter"].(string); ok {
 		filter = f
 	}
 
 	filterRegex := ""
-	if fr, ok := request.GetArguments()["filter_regex"].(string); ok {
+	if fr, ok := args["filter_regex"].(string); ok {
 		filterRegex = fr
 	}
 
-	// Validate mutual exclusivity
 	if filter != "" && filterRegex != "" {
-		return errorResult("filter and filter_regex are mutually exclusive; use only one"), nil
+		return errorResult("filter and filter_regex are mutually exclusive"), nil
 	}
 
 	contextLines := 0
-	if c, ok := request.GetArguments()["context"].(float64); ok && c > 0 {
+	if c, ok := args["context"].(float64); ok && c > 0 {
 		contextLines = int(c)
 	}
 
 	noHeaders := false
-	if nh, ok := request.GetArguments()["no_headers"].(bool); ok && nh {
-		noHeaders = true
+	if nh, ok := args["no_headers"].(bool); ok {
+		noHeaders = nh
 	}
 
-	s.log.Infof("Getting workflow logs for run %d on %s/%s (head: %d, tail: %d, filter: %q, filter_regex: %q, context: %d, no_headers: %v)",
-		runID, s.config.RepoOwner, s.config.RepoName, head, tail, filter, filterRegex, contextLines, noHeaders)
-
-	// Create filter options
-	var filterOpts *github.LogFilterOptions
-	if filter != "" || filterRegex != "" {
-		filterOpts = &github.LogFilterOptions{
-			Filter:       filter,
-			FilterRegex:  filterRegex,
-			ContextLines: contextLines,
-		}
+	filterOpts := &github.LogFilterOptions{
+		Filter:       filter,
+		FilterRegex:  filterRegex,
+		ContextLines: contextLines,
 	}
 
 	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, noHeaders, filterOpts)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to get workflow logs")), nil
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for run %d", runID))), nil
 	}
 
 	return textResult(logs), nil
+}
+
+func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	head := 0
+	if h, ok := args["head"].(float64); ok && h > 0 {
+		head = int(h)
+	}
+
+	tail := s.getLogLimit()
+	if t, ok := args["tail"].(float64); ok && t > 0 {
+		tail = int(t)
+	}
+
+	filter := ""
+	if f, ok := args["filter"].(string); ok {
+		filter = f
+	}
+
+	filterRegex := ""
+	if fr, ok := args["filter_regex"].(string); ok {
+		filterRegex = fr
+	}
+
+	if filter != "" && filterRegex != "" {
+		return errorResult("filter and filter_regex are mutually exclusive"), nil
+	}
+
+	contextLines := 0
+	if c, ok := args["context"].(float64); ok && c > 0 {
+		contextLines = int(c)
+	}
+
+	noHeaders := false
+	if nh, ok := args["no_headers"].(bool); ok {
+		noHeaders = nh
+	}
+
+	filterOpts := &github.LogFilterOptions{
+		Filter:       filter,
+		FilterRegex:  filterRegex,
+		ContextLines: contextLines,
+	}
+
+	logs, err := s.client.GetWorkflowJobLogs(ctx, jobID, head, tail, noHeaders, filterOpts)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for job %d", jobID))), nil
+	}
+
+	return textResult(logs), nil
+}
+
+func (s *MCPServer) getRunArtifacts(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	artifacts, err := s.client.GetWorkflowRunArtifacts(ctx, runID)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get artifacts for run %d", runID))), nil
+	}
+
+	format := s.getFormat()
+	if f, ok := args["format"].(string); ok {
+		format = f
+	}
+
+	if format == "full" {
+		return jsonResult(artifacts)
+	}
+	return jsonResult(artifacts)
+}
+
+func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+
+	ref := ""
+	if r, ok := args["ref"].(string); ok && r != "" {
+		ref = r
+	} else {
+		// Auto-detect ref (HEAD SHA)
+		if commit, err := github.GetLastCommit(); err == nil {
+			ref = commit.SHA
+		} else {
+			return errorResult("could not determine ref - please specify explicitly"), nil
+		}
+	}
+
+	opts := &github.GetCheckRunsOptions{}
+
+	if checkName, ok := args["check_name"].(string); ok && checkName != "" {
+		opts.CheckName = checkName
+	}
+
+	if status, ok := args["status"].(string); ok && status != "" {
+		opts.Status = status
+	}
+
+	if filter, ok := args["filter"].(string); ok && filter == "all" {
+		opts.Filter = "all"
+	} else {
+		opts.Filter = "latest"
+	}
+
+	format := "summary"
+	if f, ok := args["format"].(string); ok {
+		format = f
+	}
+
+	status, err := s.client.GetCheckRunsForRef(ctx, ref, opts)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, "failed to get check status")), nil
+	}
+
+	switch format {
+	case "full":
+		return jsonResult(status)
+	case "compact":
+		return jsonResult(status)
+	default: // summary
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Check Status for %s\n", ref))
+		sb.WriteString(fmt.Sprintf("State: %s\n", status.State))
+		sb.WriteString(fmt.Sprintf("Total Checks: %d\n", status.TotalCount))
+		if len(status.ByConclusion) > 0 {
+			sb.WriteString("By Conclusion:\n")
+			for conclusion, count := range status.ByConclusion {
+				sb.WriteString(fmt.Sprintf("  %s: %d\n", conclusion, count))
+			}
+		}
+		return textResult(sb.String()), nil
+	}
+}
+
+func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+
+	runID, ok := extractRunID(args)
+	if !ok {
+		return errorResult("run_id is required"), nil
+	}
+
+	timeoutMinutes := 30
+	if tm, ok := args["timeout_minutes"].(float64); ok && tm > 0 {
+		timeoutMinutes = int(tm)
+	}
+
+	s.log.Infof("Waiting for run %d (timeout: %dm)", runID, timeoutMinutes)
+
+	result, err := s.client.WaitForRun(ctx, runID, timeoutMinutes)
+	if err != nil && !result.TimeoutReached {
+		return errorResult(s.formatAuthError(err, "failed to wait for run")), nil
+	}
+
+	return jsonResult(result)
+}
+
+func (s *MCPServer) waitForCommitChecks(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+
+	ref := ""
+	if r, ok := args["ref"].(string); ok && r != "" {
+		ref = r
+	}
+
+	timeoutMinutes := 30
+	if tm, ok := args["timeout_minutes"].(float64); ok && tm > 0 {
+		timeoutMinutes = int(tm)
+	}
+
+	s.log.Infof("Waiting for checks on ref %s (timeout: %dm)", ref, timeoutMinutes)
+
+	result, err := s.client.WaitForCommitChecks(ctx, ref, timeoutMinutes)
+	if err != nil && !result.TimeoutReached {
+		return errorResult(s.formatAuthError(err, "failed to wait for checks")), nil
+	}
+
+	return jsonResult(result)
+}
+
+func (s *MCPServer) manageRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+
+	runID, ok := extractRunID(args)
+	if !ok {
+		return errorResult("run_id is required"), nil
+	}
+
+	actionStr, ok := args["action"].(string)
+	if !ok || actionStr == "" {
+		return errorResult("action is required (cancel, rerun, rerun_failed)"), nil
+	}
+
+	var action github.ManageRunAction
+	switch actionStr {
+	case "cancel":
+		action = github.ManageRunActionCancel
+	case "rerun":
+		action = github.ManageRunActionRerun
+	case "rerun_failed":
+		action = github.ManageRunActionRerunFailed
+	default:
+		return errorResult(fmt.Sprintf("unknown action: %s (must be cancel, rerun, or rerun_failed)", actionStr)), nil
+	}
+
+	s.log.Infof("Managing run %d: %s", runID, action)
+
+	result, err := s.client.ManageRun(ctx, runID, action)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, "failed to manage run")), nil
+	}
+
+	if result.Status == "success" {
+		return textResult(result.Message), nil
+	}
+	return errorResult(result.Message), nil
+}
+
+// getFormat returns the format from config or default
+func (s *MCPServer) getFormat() string {
+	if s.config.DefaultFormat != "" {
+		return s.config.DefaultFormat
+	}
+	return "compact"
 }
 
 func (s *MCPServer) GetServer() *server.MCPServer {
