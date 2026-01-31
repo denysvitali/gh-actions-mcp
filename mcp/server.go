@@ -74,8 +74,9 @@ func formatWorkflowRun(run *github.WorkflowRun) string {
 	case "cancelled":
 		icon = "⊘"
 	}
-	return fmt.Sprintf("%s Run #%d | %s | %s | %s | %s\n    ID: %d | %s",
-		icon, run.RunNumber, run.Status, run.Conclusion, run.Branch, run.Event, run.ID, run.URL)
+	// Include workflow name for clarity
+	return fmt.Sprintf("%s [%s] Run #%d | %s | %s | %s | %s\n    ID: %d | %s",
+		icon, run.Name, run.RunNumber, run.Status, run.Conclusion, run.Branch, run.Event, run.ID, run.URL)
 }
 
 // formatWorkflowRunDetail formats a workflow run with full details
@@ -88,10 +89,25 @@ func formatWorkflowRunDetail(run *github.WorkflowRun) string {
 func formatActionsStatus(status *github.ActionsStatus, commit *github.CommitInfo, branch string) string {
 	var sb strings.Builder
 
-	// Header with repo info
+	// Header with repo info and overall health indicator
 	sb.WriteString("GitHub Actions Status\n")
 	sb.WriteString(strings.Repeat("=", 40))
 	sb.WriteString("\n\n")
+
+	// Overall health indicator - show FIRST so failures are immediately visible
+	sb.WriteString("Overall Status\n")
+	sb.WriteString(strings.Repeat("-", 20))
+	sb.WriteString("\n")
+	if status.FailedRuns > 0 {
+		sb.WriteString("  Status: ❌ FAILING (some workflows are failing)\n")
+	} else if status.InProgressRuns > 0 || status.QueuedRuns > 0 {
+		sb.WriteString("  Status: ⏳ PENDING (workflows in progress)\n")
+	} else if status.SuccessfulRuns > 0 {
+		sb.WriteString("  Status: ✅ ALL PASSING\n")
+	} else {
+		sb.WriteString("  Status: ○ NO RUNS\n")
+	}
+	sb.WriteString("\n")
 
 	// Commit context (if available)
 	if commit != nil {
@@ -117,18 +133,48 @@ func formatActionsStatus(status *github.ActionsStatus, commit *github.CommitInfo
 	sb.WriteString(fmt.Sprintf("  Queued:           %d\n", status.QueuedRuns))
 	sb.WriteString("\n")
 
-	// Recent runs
+	// Recent runs, grouped by workflow
 	if len(status.RecentRuns) > 0 {
-		sb.WriteString("Recent Workflow Runs\n")
+		sb.WriteString("Recent Workflow Runs (grouped by workflow)\n")
 		sb.WriteString(strings.Repeat("-", 20))
 		sb.WriteString("\n")
+
+		// Group runs by workflow name
+		workflowRuns := make(map[string][]*github.WorkflowRun)
 		for _, run := range status.RecentRuns {
-			sb.WriteString(formatWorkflowRun(run))
-			sb.WriteString("\n")
+			workflowRuns[run.Name] = append(workflowRuns[run.Name], run)
+		}
+
+		// Print each workflow's runs
+		for _, workflowName := range sortedKeys(workflowRuns) {
+			runs := workflowRuns[workflowName]
+			sb.WriteString(fmt.Sprintf("\n[%s]\n", workflowName))
+			for _, run := range runs {
+				sb.WriteString("  ")
+				sb.WriteString(formatWorkflowRun(run))
+				sb.WriteString("\n")
+			}
 		}
 	}
 
 	return sb.String()
+}
+
+// sortedKeys returns sorted keys of a map
+func sortedKeys(m map[string][]*github.WorkflowRun) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Simple sort - for more complex sorting, use sort package
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[i] > keys[j] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	return keys
 }
 
 // formatWorkflowRuns formats workflow runs with clear section headers
