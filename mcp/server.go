@@ -221,6 +221,9 @@ func (s *MCPServer) registerTools() {
 		mcp.WithBoolean("no_headers",
 			mcp.Description("For element=logs: don't print file headers (=== filename ===)"),
 		),
+		mcp.WithString("section",
+			mcp.Description("For element=logs: extract a specific section by name/pattern (e.g., 'Build', 'Test'). GitHub Actions sections are marked with ##[group]Section Name"),
+		),
 		mcp.WithString("format",
 			mcp.Description("For element=info, jobs, artifacts, log_files: output format (compact/full, default: compact)"),
 			mcp.DefaultString("compact"),
@@ -640,7 +643,23 @@ func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string
 		ContextLines: contextLines,
 	}
 
-	logs, err := s.client.GetWorkflowLogsWithPattern(ctx, runID, head, tail, offset, noHeaders, filePattern, filterOpts)
+	// Check if section extraction is requested
+	section := ""
+	if sec, ok := args["section"].(string); ok {
+		section = sec
+	}
+
+	var logs string
+	var err error
+
+	if section != "" {
+		// Extract specific section
+		logs, err = s.client.GetLogSection(ctx, runID, 0, section, filterOpts)
+	} else {
+		// Get all logs with optional filtering
+		logs, err = s.client.GetWorkflowLogsWithPattern(ctx, runID, head, tail, offset, noHeaders, filePattern, filterOpts)
+	}
+
 	if err != nil {
 		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for run %d", runID))), nil
 	}
@@ -699,7 +718,24 @@ func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string
 		ContextLines: contextLines,
 	}
 
-	logs, err := s.client.GetWorkflowJobLogs(ctx, jobID, head, tail, offset, noHeaders, filterOpts)
+	// Check if section extraction is requested
+	section := ""
+	if sec, ok := args["section"].(string); ok {
+		section = sec
+	}
+
+	var logs string
+	var err error
+
+	if section != "" {
+		// Extract specific section from job logs
+		// Note: GetLogSection with jobID > 0 fetches job-specific logs
+		logs, err = s.client.GetLogSection(ctx, 0, jobID, section, filterOpts)
+	} else {
+		// Get all job logs with optional filtering
+		logs, err = s.client.GetWorkflowJobLogs(ctx, jobID, head, tail, offset, noHeaders, filterOpts)
+	}
+
 	if err != nil {
 		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for job %d", jobID))), nil
 	}
