@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -170,14 +171,24 @@ func (s *MCPServer) registerTools() {
 
 	// Tool: get_run
 	s.srv.AddTool(mcp.NewTool("get_run",
-		mcp.WithDescription("Get detailed information about a workflow run, including jobs, logs, or artifacts"),
+		mcp.WithDescription("Get detailed information about a workflow run, including jobs, logs, artifacts, or artifact content"),
 		mcp.WithNumber("run_id",
 			mcp.Description("The workflow run ID"),
 			mcp.Required(),
 		),
 		mcp.WithString("element",
-			mcp.Description("Element to retrieve: info (default), jobs, logs, or artifacts"),
+			mcp.Description("Element to retrieve: info (default), jobs, logs, log_files, artifacts, artifact_content"),
 			mcp.DefaultString("info"),
+		),
+		mcp.WithNumber("artifact_id",
+			mcp.Description("For element=artifact_content: the artifact ID to get contents for"),
+		),
+		mcp.WithString("file_pattern",
+			mcp.Description("For element=logs or artifact_content: glob pattern to filter files (e.g., '*.log', 'build/*')"),
+		),
+		mcp.WithNumber("max_file_size",
+			mcp.Description("For element=artifact_content: maximum size of individual files to read in bytes (default: 1MB)"),
+			mcp.DefaultNumber(1024 * 1024),
 		),
 		mcp.WithNumber("job_id",
 			mcp.Description("For element=logs: specific job ID to get logs for"),
@@ -197,21 +208,21 @@ func (s *MCPServer) registerTools() {
 		mcp.WithNumber("offset",
 			mcp.Description("For element=logs: skip first N lines before returning (0-based)"),
 		),
-		mcp.WithString("filter",
-			mcp.Description("For element=logs: filter logs to lines containing this substring (case-insensitive)"),
+		mcp.WithString("search",
+			mcp.Description("For element=logs: search/filter logs to lines containing this substring (case-insensitive)"),
 		),
-		mcp.WithString("filter_regex",
+		mcp.WithString("search_regex",
 			mcp.Description("For element=logs: filter logs to lines matching this regex pattern"),
 		),
 		mcp.WithNumber("context",
-			mcp.Description("For element=logs: number of lines to show before and after each match (default: 0)"),
+			mcp.Description("For element=logs: number of lines to show before and after each search match (default: 0)"),
 			mcp.DefaultNumber(0),
 		),
 		mcp.WithBoolean("no_headers",
 			mcp.Description("For element=logs: don't print file headers (=== filename ===)"),
 		),
 		mcp.WithString("format",
-			mcp.Description("For element=info, jobs, artifacts: output format (compact/full, default: compact)"),
+			mcp.Description("For element=info, jobs, artifacts, log_files: output format (compact/full, default: compact)"),
 			mcp.DefaultString("compact"),
 		),
 	), s.getRun)
@@ -275,6 +286,34 @@ func (s *MCPServer) registerTools() {
 			mcp.Required(),
 		),
 	), s.manageRun)
+
+	// Tool: get_artifact
+	s.srv.AddTool(mcp.NewTool("get_artifact",
+		mcp.WithDescription("Get the contents of a workflow run artifact (stream without downloading to disk)"),
+		mcp.WithNumber("artifact_id",
+			mcp.Description("The artifact ID"),
+			mcp.Required(),
+		),
+		mcp.WithString("file_pattern",
+			mcp.Description("Optional: glob pattern to filter files within the artifact (e.g., '*.txt', 'logs/*.log')"),
+		),
+		mcp.WithNumber("max_file_size",
+			mcp.Description("Optional: maximum size of individual files to read in bytes (default: 1MB). Files larger than this will show size info only."),
+			mcp.DefaultNumber(1024*1024),
+		),
+	), s.getArtifact)
+
+	// Tool: download_artifact
+	s.srv.AddTool(mcp.NewTool("download_artifact",
+		mcp.WithDescription("Download a workflow run artifact to disk"),
+		mcp.WithNumber("artifact_id",
+			mcp.Description("The artifact ID"),
+			mcp.Required(),
+		),
+		mcp.WithString("output_path",
+			mcp.Description("Optional: path where to save the artifact (default: {artifact-name}.zip)"),
+		),
+	), s.downloadArtifact)
 }
 
 func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -451,8 +490,12 @@ func (s *MCPServer) getRun(ctx context.Context, request mcp.CallToolRequest) (*m
 		return s.getRunJobs(ctx, runID, args)
 	case "logs":
 		return s.getRunLogs(ctx, runID, args)
+	case "log_files":
+		return s.getLogFiles(ctx, runID, args)
 	case "artifacts":
 		return s.getRunArtifacts(ctx, runID, args)
+	case "artifact_content":
+		return s.getArtifactContent(ctx, args)
 	default: // info
 		return s.getRunInfo(ctx, runID, args)
 	}
@@ -556,18 +599,23 @@ func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string
 		offset = int(o)
 	}
 
-	filter := ""
-	if f, ok := args["filter"].(string); ok {
-		filter = f
+	// Support both old 'filter' and new 'search' parameter
+	search := ""
+	if s, ok := args["search"].(string); ok {
+		search = s
+	} else if f, ok := args["filter"].(string); ok {
+		search = f // Support old parameter name for backwards compatibility
 	}
 
-	filterRegex := ""
-	if fr, ok := args["filter_regex"].(string); ok {
-		filterRegex = fr
+	searchRegex := ""
+	if sr, ok := args["search_regex"].(string); ok {
+		searchRegex = sr
+	} else if fr, ok := args["filter_regex"].(string); ok {
+		searchRegex = fr // Support old parameter name
 	}
 
-	if filter != "" && filterRegex != "" {
-		return errorResult("filter and filter_regex are mutually exclusive"), nil
+	if search != "" && searchRegex != "" {
+		return errorResult("search and search_regex are mutually exclusive"), nil
 	}
 
 	contextLines := 0
@@ -580,13 +628,19 @@ func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string
 		noHeaders = nh
 	}
 
+	// Get file pattern for filtering log files
+	filePattern := ""
+	if fp, ok := args["file_pattern"].(string); ok {
+		filePattern = fp
+	}
+
 	filterOpts := &github.LogFilterOptions{
-		Filter:       filter,
-		FilterRegex:  filterRegex,
+		Filter:       search,
+		FilterRegex:  searchRegex,
 		ContextLines: contextLines,
 	}
 
-	logs, err := s.client.GetWorkflowLogs(ctx, runID, head, tail, offset, noHeaders, filterOpts)
+	logs, err := s.client.GetWorkflowLogsWithPattern(ctx, runID, head, tail, offset, noHeaders, filePattern, filterOpts)
 	if err != nil {
 		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for run %d", runID))), nil
 	}
@@ -610,18 +664,23 @@ func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string
 		offset = int(o)
 	}
 
-	filter := ""
-	if f, ok := args["filter"].(string); ok {
-		filter = f
+	// Support both old 'filter' and new 'search' parameter
+	search := ""
+	if s, ok := args["search"].(string); ok {
+		search = s
+	} else if f, ok := args["filter"].(string); ok {
+		search = f
 	}
 
-	filterRegex := ""
-	if fr, ok := args["filter_regex"].(string); ok {
-		filterRegex = fr
+	searchRegex := ""
+	if sr, ok := args["search_regex"].(string); ok {
+		searchRegex = sr
+	} else if fr, ok := args["filter_regex"].(string); ok {
+		searchRegex = fr
 	}
 
-	if filter != "" && filterRegex != "" {
-		return errorResult("filter and filter_regex are mutually exclusive"), nil
+	if search != "" && searchRegex != "" {
+		return errorResult("search and search_regex are mutually exclusive"), nil
 	}
 
 	contextLines := 0
@@ -635,8 +694,8 @@ func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string
 	}
 
 	filterOpts := &github.LogFilterOptions{
-		Filter:       filter,
-		FilterRegex:  filterRegex,
+		Filter:       search,
+		FilterRegex:  searchRegex,
 		ContextLines: contextLines,
 	}
 
@@ -665,12 +724,71 @@ func (s *MCPServer) getRunArtifacts(ctx context.Context, runID int64, args map[s
 	return jsonResult(artifacts)
 }
 
+func (s *MCPServer) getArtifactContent(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	artifactIDFloat, ok := args["artifact_id"].(float64)
+	if !ok {
+		return errorResult("artifact_id is required for element=artifact_content"), nil
+	}
+	artifactID := int64(artifactIDFloat)
+
+	filePattern := ""
+	if fp, ok := args["file_pattern"].(string); ok {
+		filePattern = fp
+	}
+
+	maxFileSize := int64(1024 * 1024) // 1MB default
+	if mfs, ok := args["max_file_size"].(float64); ok && mfs > 0 {
+		maxFileSize = int64(mfs)
+	}
+
+	s.log.Infof("Getting artifact content %d (pattern: %s, max_size: %d)", artifactID, filePattern, maxFileSize)
+
+	content, err := s.client.GetArtifactContent(ctx, artifactID, filePattern, maxFileSize)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get artifact content %d", artifactID))), nil
+	}
+
+	return jsonResultPretty(content)
+}
+
+func (s *MCPServer) getLogFiles(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	logFiles, err := s.client.GetWorkflowLogFiles(ctx, runID)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get log files for run %d", runID))), nil
+	}
+
+	// Apply file pattern filter if specified
+	if pattern, ok := args["file_pattern"].(string); ok && pattern != "" {
+		filtered := make([]*github.LogFileInfo, 0)
+		for _, lf := range logFiles {
+			matched, err := filepath.Match(pattern, lf.Path)
+			if err != nil {
+				return errorResult(fmt.Sprintf("invalid file pattern %q: %v", pattern, err)), nil
+			}
+			if matched {
+				filtered = append(filtered, lf)
+			}
+		}
+		logFiles = filtered
+	}
+
+	format := s.getFormat()
+	if f, ok := args["format"].(string); ok {
+		format = f
+	}
+
+	if format == "full" {
+		return jsonResultPretty(logFiles)
+	}
+	return jsonResult(logFiles)
+}
+
 func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
 
 	ref := ""
 	if r, ok := args["ref"].(string); ok && r != "" {
-		ref = r
+		ref = strings.TrimSpace(r)
 	} else {
 		// Auto-detect ref (HEAD SHA)
 		if commit, err := github.GetLastCommit(); err == nil {
@@ -754,7 +872,7 @@ func (s *MCPServer) waitForCommitChecks(ctx context.Context, request mcp.CallToo
 
 	ref := ""
 	if r, ok := args["ref"].(string); ok && r != "" {
-		ref = r
+		ref = strings.TrimSpace(r)
 	}
 
 	timeoutMinutes := 30
@@ -808,6 +926,59 @@ func (s *MCPServer) manageRun(ctx context.Context, request mcp.CallToolRequest) 
 		return textResult(result.Message), nil
 	}
 	return errorResult(result.Message), nil
+}
+
+func (s *MCPServer) getArtifact(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+
+	artifactIDFloat, ok := args["artifact_id"].(float64)
+	if !ok {
+		return errorResult("artifact_id is required"), nil
+	}
+	artifactID := int64(artifactIDFloat)
+
+	filePattern := ""
+	if fp, ok := args["file_pattern"].(string); ok {
+		filePattern = fp
+	}
+
+	maxFileSize := int64(1024 * 1024) // 1MB default
+	if mfs, ok := args["max_file_size"].(float64); ok && mfs > 0 {
+		maxFileSize = int64(mfs)
+	}
+
+	s.log.Infof("Getting artifact %d (pattern: %s, max_size: %d)", artifactID, filePattern, maxFileSize)
+
+	content, err := s.client.GetArtifactContent(ctx, artifactID, filePattern, maxFileSize)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get artifact %d", artifactID))), nil
+	}
+
+	return jsonResultPretty(content)
+}
+
+func (s *MCPServer) downloadArtifact(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+
+	artifactIDFloat, ok := args["artifact_id"].(float64)
+	if !ok {
+		return errorResult("artifact_id is required"), nil
+	}
+	artifactID := int64(artifactIDFloat)
+
+	outputPath := ""
+	if op, ok := args["output_path"].(string); ok {
+		outputPath = op
+	}
+
+	s.log.Infof("Downloading artifact %d to %s", artifactID, outputPath)
+
+	result, err := s.client.DownloadArtifact(ctx, artifactID, outputPath)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to download artifact %d", artifactID))), nil
+	}
+
+	return jsonResultPretty(result)
 }
 
 // getFormat returns the format from config or default

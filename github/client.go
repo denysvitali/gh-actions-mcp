@@ -4,14 +4,17 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -24,6 +27,72 @@ var log *logrus.Logger
 func SetLogger(l *logrus.Logger) {
 	log = l
 }
+
+// HTTPError represents an HTTP error with a status code
+type HTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *HTTPError) Error() string {
+	return e.Message
+}
+
+// IsHTTPError checks if an error is an HTTPError with a specific status code
+func IsHTTPError(err error, statusCode int) bool {
+	if err == nil {
+		return false
+	}
+	if httpErr, ok := err.(*HTTPError); ok {
+		return httpErr.StatusCode == statusCode
+	}
+	// Check for go-github error format: "unexpected status code: 404 Not Found"
+	// This regex specifically matches the status code pattern at the end of the message
+	// preceded by "status code: " to avoid matching repo names like "401k"
+	re := regexp.MustCompile(`status code:\s*(\d+)`)
+	matches := re.FindStringSubmatch(err.Error())
+	if len(matches) > 1 {
+		code, _ := strconv.Atoi(matches[1])
+		return code == statusCode
+	}
+	return false
+}
+
+// newHTTPError creates an HTTPError from a response and error
+func newHTTPError(resp *http.Response, msg string) error {
+	statusCode := 0
+	if resp != nil {
+		statusCode = resp.StatusCode
+	}
+	return &HTTPError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("%s: HTTP %d", msg, statusCode),
+	}
+}
+
+// newHTTPErrorFromGitHub creates an HTTPError from a github.Response
+func newHTTPErrorFromGitHub(resp *github.Response, msg string) error {
+	statusCode := 0
+	if resp != nil {
+		statusCode = resp.StatusCode
+	}
+	return &HTTPError{
+		StatusCode: statusCode,
+		Message:    fmt.Sprintf("%s: HTTP %d", msg, statusCode),
+	}
+}
+
+// logSizeThreshold is the size at which we switch to temp file processing
+const logSizeThreshold = 10 * 1024 * 1024 // 10MB
+
+// maxLogFileSize is the maximum size for individual log files we'll read
+const maxLogFileSize = 50 * 1024 * 1024 // 50MB per file
+
+// regexCache caches compiled regex patterns
+var (
+	regexCache      = make(map[string]*regexp.Regexp)
+	regexCacheMutex sync.RWMutex
+)
 
 type Client struct {
 	owner        string
@@ -134,6 +203,38 @@ type Artifact struct {
 	CreatedAt    string `json:"created_at"`
 	ExpiresAt    string `json:"expires_at,omitempty"`
 	ArchiveURL   string `json:"archive_url,omitempty"`
+}
+
+// ArtifactFile represents a single file within an artifact
+type ArtifactFile struct {
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	Content  string `json:"content,omitempty"`
+	Encoding string `json:"encoding,omitempty"` // "text" or "base64"
+}
+
+// ArtifactContent represents the contents of an artifact
+type ArtifactContent struct {
+	Name        string          `json:"name"`
+	ID          int64           `json:"id"`
+	SizeInBytes int64           `json:"size_in_bytes"`
+	Files       []*ArtifactFile `json:"files"`
+	FileCount   int             `json:"file_count"`
+}
+
+// ArtifactDownloadResult represents the result of downloading an artifact
+type ArtifactDownloadResult struct {
+	Name        string `json:"name"`
+	ID          int64  `json:"id"`
+	SavedPath   string `json:"saved_path"`
+	FileCount   int    `json:"file_count"`
+	TotalSize   int64  `json:"total_size"`
+}
+
+// LogFileInfo represents information about a single log file in the archive
+type LogFileInfo struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 // CheckRun represents a GitHub check run
@@ -325,6 +426,34 @@ type logLine struct {
 // Pre-compiled regex for detecting file headers
 var headerPattern = regexp.MustCompile(`^=== .+ ===$`)
 
+// getCachedRegex returns a cached compiled regex or compiles and caches a new one
+func getCachedRegex(pattern string) (*regexp.Regexp, error) {
+	regexCacheMutex.RLock()
+	re, ok := regexCache[pattern]
+	regexCacheMutex.RUnlock()
+
+	if ok {
+		return re, nil
+	}
+
+	regexCacheMutex.Lock()
+	defer regexCacheMutex.Unlock()
+
+	// Double-check after acquiring write lock
+	re, ok = regexCache[pattern]
+	if ok {
+		return re, nil
+	}
+
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	regexCache[pattern] = compiled
+	return compiled, nil
+}
+
 // parseLogLines converts raw log string into structured logLine slice
 func parseLogLines(logStr string) []logLine {
 	rawLines := strings.Split(logStr, "\n")
@@ -355,20 +484,27 @@ func filterLogLines(lines []logLine, opts *LogFilterOptions) ([]logLine, error) 
 	}
 
 	var matcher func(string) bool
+	var matcherErr error
 
 	if opts.FilterRegex != "" {
-		re, err := regexp.Compile(opts.FilterRegex)
+		re, err := getCachedRegex(opts.FilterRegex)
 		if err != nil {
 			return nil, fmt.Errorf("invalid regex pattern %q: %w", opts.FilterRegex, err)
 		}
 		matcher = func(s string) bool {
 			return re.MatchString(s)
 		}
+		matcherErr = err
 	} else {
 		lowerFilter := strings.ToLower(opts.Filter)
 		matcher = func(s string) bool {
 			return strings.Contains(strings.ToLower(s), lowerFilter)
 		}
+	}
+
+	// Check for matcher compilation errors
+	if matcherErr != nil {
+		return nil, matcherErr
 	}
 
 	// First pass: find all matching lines (excluding headers)
@@ -576,77 +712,110 @@ func (c *Client) RerunWorkflowRun(ctx context.Context, runID int64) error {
 	return nil
 }
 
-// GetWorkflowLogs retrieves the logs for a workflow run and returns them as a string.
-// The logs can be filtered by substring or regex pattern, with optional context lines.
-// After filtering, results can be limited by line count using head, tail, and offset parameters.
-// - offset: skip first N lines (0-based)
-// - head: return at most N lines from the offset (if specified)
-// - tail: return the last N lines (takes precedence over head+offset)
-// If noHeaders is true, file headers (=== filename ===) are not included.
-func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
-	// Get the log archive (GitHub returns a redirect to a ZIP file)
-	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
-	if err != nil {
-		return "", fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
-	}
+// logFile represents a log file's name and content
+type logFile struct {
+	name string
+	data string
+}
 
-	// If we got a URL, fetch the ZIP file from it
-	zipURL := url
-	if resp != nil && resp.StatusCode != 0 {
-		// The go-github library follows redirects automatically, so if we get here
-		// with a non-zero status, something went wrong
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
-			return "", fmt.Errorf("failed to get workflow logs: HTTP %d", resp.StatusCode)
-		}
-	}
-
+// readZipArchive reads a ZIP archive from a URL, using temp files for large downloads
+// to avoid loading everything into memory. Returns a slice of log files.
+func readZipArchive(zipURL string, httpClient *http.Client) ([]logFile, int64, error) {
 	// Fetch the ZIP file
-	zipResp, err := c.gh.Client().Get(zipURL.String())
+	zipResp, err := httpClient.Get(zipURL)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch workflow logs for run %d: %w", runID, err)
+		return nil, 0, fmt.Errorf("failed to fetch ZIP: %w", err)
 	}
 	defer zipResp.Body.Close()
 
 	if zipResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch workflow logs: HTTP %d", zipResp.StatusCode)
+		return nil, 0, fmt.Errorf("failed to fetch ZIP: HTTP %d", zipResp.StatusCode)
 	}
 
-	// Read the ZIP data
-	zipData, err := io.ReadAll(zipResp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read workflow logs for run %d: %w", runID, err)
+	// Check content length to decide approach
+	contentLength := zipResp.ContentLength
+	useTempFile := contentLength > logSizeThreshold || contentLength < 0
+
+	var zipReader *zip.Reader
+	var cleanup func()
+
+	if useTempFile {
+		// For large archives or unknown size, use a temp file
+		tempFile, err := os.CreateTemp("", "logs-*.zip")
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to create temp file: %w", err)
+		}
+
+		// Copy to temp file
+		written, err := io.Copy(tempFile, zipResp.Body)
+		if err != nil {
+			tempFile.Close()
+			os.Remove(tempFile.Name())
+			return nil, 0, fmt.Errorf("failed to write to temp file: %w", err)
+		}
+
+		// Re-open for reading
+		_, err = tempFile.Seek(0, 0)
+		if err != nil {
+			tempFile.Close()
+			os.Remove(tempFile.Name())
+			return nil, 0, fmt.Errorf("failed to seek temp file: %w", err)
+		}
+
+		zipReader, err = zip.NewReader(tempFile, written)
+		if err != nil {
+			tempFile.Close()
+			os.Remove(tempFile.Name())
+			return nil, 0, fmt.Errorf("failed to open ZIP: %w", err)
+		}
+
+		// Set up cleanup function
+		cleanup = func() {
+			tempFile.Close()
+			os.Remove(tempFile.Name())
+		}
+
+		contentLength = written
+	} else {
+		// For small archives, read into memory
+		zipData, err := io.ReadAll(zipResp.Body)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to read ZIP: %w", err)
+		}
+
+		zipReader, err = zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to open ZIP: %w", err)
+		}
+
+		contentLength = int64(len(zipData))
+		cleanup = func() {}
 	}
 
-	// Open the ZIP archive
-	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
-	if err != nil {
-		return "", fmt.Errorf("failed to open log archive for run %d: %w", runID, err)
-	}
-
-	// Collect all log files and sort them by name for consistent output
-	type logFile struct {
-		name string
-		data string
-	}
+	// Process files
 	var logFiles []logFile
-
 	for _, file := range zipReader.File {
-		// Skip directories and files in subdirectories (like __cacache__
 		if file.FileInfo().IsDir() {
 			continue
 		}
 
-		// Read the file content
-		rc, err := file.Open()
-		if err != nil {
-			log.Debugf("Warning: could not open %s in log archive: %v", file.Name, err)
+		// Skip excessively large individual files
+		if file.UncompressedSize64 > uint64(maxLogFileSize) {
+			log.Debugf("Skipping large log file %s (%d bytes)", file.Name, file.UncompressedSize64)
 			continue
 		}
 
-		content, err := io.ReadAll(rc)
+		rc, err := file.Open()
+		if err != nil {
+			log.Debugf("Warning: could not open %s in ZIP: %v", file.Name, err)
+			continue
+		}
+
+		// Use limited reader to prevent excessive memory usage
+		content, err := io.ReadAll(io.LimitReader(rc, maxLogFileSize))
 		rc.Close()
 		if err != nil {
-			log.Debugf("Warning: could not read %s in log archive: %v", file.Name, err)
+			log.Debugf("Warning: could not read %s in ZIP: %v", file.Name, err)
 			continue
 		}
 
@@ -656,10 +825,83 @@ func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, o
 		})
 	}
 
+	// Clean up temp file if used
+	cleanup()
+
 	// Sort by filename for consistent output
 	sort.Slice(logFiles, func(i, j int) bool {
 		return logFiles[i].name < logFiles[j].name
 	})
+
+	return logFiles, contentLength, nil
+}
+
+// GetWorkflowLogFiles returns a list of log files available in the workflow run archive
+func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFileInfo, error) {
+	// Get the log archive URL
+	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
+	}
+
+	if resp != nil && resp.StatusCode != 0 {
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+			return nil, newHTTPErrorFromGitHub(resp, "failed to get workflow logs")
+		}
+	}
+
+	// Fetch ZIP archive
+	logFiles, _, err := readZipArchive(url.String(), c.gh.Client())
+	if err != nil {
+		return nil, fmt.Errorf("failed to read log archive for run %d: %w", runID, err)
+	}
+
+	// Convert to LogFileInfo
+	result := make([]*LogFileInfo, 0, len(logFiles))
+	for _, lf := range logFiles {
+		result = append(result, &LogFileInfo{
+			Path: lf.name,
+			Size: int64(len(lf.data)),
+		})
+	}
+
+	return result, nil
+}
+
+// GetWorkflowLogsWithPattern retrieves logs for a workflow run with optional file pattern filtering
+func (c *Client) GetWorkflowLogsWithPattern(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filePattern string, filterOpts *LogFilterOptions) (string, error) {
+	// Get the log archive URL
+	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
+	if err != nil {
+		return "", fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
+	}
+
+	if resp != nil && resp.StatusCode != 0 {
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+			return "", newHTTPErrorFromGitHub(resp, "failed to get workflow logs")
+		}
+	}
+
+	// Read ZIP archive
+	logFiles, _, err := readZipArchive(url.String(), c.gh.Client())
+	if err != nil {
+		return "", fmt.Errorf("failed to read log archive for run %d: %w", runID, err)
+	}
+
+	// Apply file pattern filter if specified
+	if filePattern != "" {
+		filtered := make([]logFile, 0)
+		for _, lf := range logFiles {
+			matched, err := filepath.Match(filePattern, lf.name)
+			if err != nil {
+				return "", fmt.Errorf("invalid file pattern %q: %w", filePattern, err)
+			}
+			if matched {
+				filtered = append(filtered, lf)
+			}
+		}
+		logFiles = filtered
+	}
 
 	// Combine all logs into a single string with optional headers
 	var allLogs strings.Builder
@@ -716,6 +958,17 @@ func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, o
 	}
 
 	return logStr, nil
+}
+
+// GetWorkflowLogs retrieves the logs for a workflow run and returns them as a string.
+// The logs can be filtered by substring or regex pattern, with optional context lines.
+// After filtering, results can be limited by line count using head, tail, and offset parameters.
+// - offset: skip first N lines (0-based)
+// - head: return at most N lines from the offset (if specified)
+// - tail: return the last N lines (takes precedence over head+offset)
+// If noHeaders is true, file headers (=== filename ===) are not included.
+func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+	return c.GetWorkflowLogsWithPattern(ctx, runID, head, tail, offset, noHeaders, "", filterOpts)
 }
 
 type WaitResult struct {
@@ -984,7 +1237,7 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 	// Check response status
 	if resp != nil && resp.StatusCode != 0 {
 		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
-			return "", fmt.Errorf("failed to get job logs: HTTP %d", resp.StatusCode)
+			return "", newHTTPErrorFromGitHub(resp, "failed to get job logs")
 		}
 	}
 
@@ -996,7 +1249,7 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 	defer zipResp.Body.Close()
 
 	if zipResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch job logs: HTTP %d", zipResp.StatusCode)
+		return "", &HTTPError{StatusCode: zipResp.StatusCode, Message: fmt.Sprintf("failed to fetch job logs: HTTP %d", zipResp.StatusCode)}
 	}
 
 	// Read the ZIP data
@@ -1124,6 +1377,249 @@ func (c *Client) GetWorkflowRunArtifacts(ctx context.Context, runID int64) ([]*A
 	}
 
 	return result, nil
+}
+
+// GetArtifactByID retrieves a single artifact by its ID
+func (c *Client) GetArtifactByID(ctx context.Context, artifactID int64) (*Artifact, error) {
+	art, _, err := c.gh.Actions.GetArtifact(ctx, c.owner, c.repo, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get artifact %d: %w", artifactID, err)
+	}
+
+	return &Artifact{
+		ID:          art.GetID(),
+		Name:        art.GetName(),
+		SizeInBytes: art.GetSizeInBytes(),
+		CreatedAt:   formatTimeValue(art.GetCreatedAt()),
+		ExpiresAt:   formatTimeValue(art.GetExpiresAt()),
+		ArchiveURL:  art.GetArchiveDownloadURL(),
+	}, nil
+}
+
+// GetArtifactContent retrieves the contents of an artifact without downloading to disk
+// If filePattern is provided, only files matching the pattern will be returned
+// maxFileSize limits the size of individual files read (in bytes, 0 for unlimited)
+// For text files, content is returned as a string. For binary files, content is base64 encoded.
+func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, filePattern string, maxFileSize int64) (*ArtifactContent, error) {
+	// First get artifact metadata
+	artifact, err := c.GetArtifactByID(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Download the artifact ZIP
+	zipURL, resp, err := c.gh.Actions.DownloadArtifact(ctx, c.owner, c.repo, artifactID, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get artifact download URL: %w", err)
+	}
+
+	if resp != nil && resp.StatusCode != 0 {
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+			return nil, fmt.Errorf("failed to download artifact: HTTP %d", resp.StatusCode)
+		}
+	}
+
+	// Fetch the ZIP file
+	zipResp, err := c.gh.Client().Get(zipURL.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch artifact: %w", err)
+	}
+	defer zipResp.Body.Close()
+
+	if zipResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch artifact: HTTP %d", zipResp.StatusCode)
+	}
+
+	// Read the ZIP data
+	zipData, err := io.ReadAll(zipResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read artifact data: %w", err)
+	}
+
+	// Open the ZIP archive
+	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open artifact archive: %w", err)
+	}
+
+	// Process files in the ZIP
+	var files []*ArtifactFile
+	var totalSize int64
+
+	for _, file := range zipReader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+
+		// Skip files larger than maxFileSize (if specified)
+		if maxFileSize > 0 && file.UncompressedSize64 > uint64(maxFileSize) {
+			files = append(files, &ArtifactFile{
+				Path:    file.Name,
+				Size:    int64(file.UncompressedSize64),
+				Content: fmt.Sprintf("(file too large to read, size: %d bytes)", file.UncompressedSize64),
+			})
+			totalSize += int64(file.UncompressedSize64)
+			continue
+		}
+
+		// Apply file pattern filter if specified
+		if filePattern != "" {
+			matched, err := filepath.Match(filePattern, file.Name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid file pattern %q: %w", filePattern, err)
+			}
+			if !matched {
+				continue
+			}
+		}
+
+		// Read file content
+		rc, err := file.Open()
+		if err != nil {
+			log.Debugf("Warning: could not open %s in artifact: %v", file.Name, err)
+			continue
+		}
+
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			log.Debugf("Warning: could not read %s in artifact: %v", file.Name, err)
+			continue
+		}
+
+		totalSize += int64(file.UncompressedSize64)
+
+		// Detect if content is text or binary
+		encoding := "text"
+		contentStr := string(content)
+		if !isTextContent(content) {
+			encoding = "base64"
+			contentStr = base64.StdEncoding.EncodeToString(content)
+		}
+
+		files = append(files, &ArtifactFile{
+			Path:     file.Name,
+			Size:     int64(file.UncompressedSize64),
+			Content:  contentStr,
+			Encoding: encoding,
+		})
+	}
+
+	// Sort files by path
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+
+	return &ArtifactContent{
+		Name:        artifact.Name,
+		ID:          artifact.ID,
+		SizeInBytes: artifact.SizeInBytes,
+		Files:       files,
+		FileCount:   len(files),
+	}, nil
+}
+
+// DownloadArtifact downloads an artifact and saves it to a file
+// If outputPath is empty, a default path will be generated (artifact-name.zip)
+func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputPath string) (*ArtifactDownloadResult, error) {
+	// First get artifact metadata
+	artifact, err := c.GetArtifactByID(ctx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate default output path if not provided
+	if outputPath == "" {
+		outputPath = fmt.Sprintf("%s.zip", artifact.Name)
+	}
+
+	// Download the artifact ZIP
+	zipURL, resp, err := c.gh.Actions.DownloadArtifact(ctx, c.owner, c.repo, artifactID, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get artifact download URL: %w", err)
+	}
+
+	if resp != nil && resp.StatusCode != 0 {
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+			return nil, fmt.Errorf("failed to download artifact: HTTP %d", resp.StatusCode)
+		}
+	}
+
+	// Fetch the ZIP file
+	zipResp, err := c.gh.Client().Get(zipURL.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch artifact: %w", err)
+	}
+	defer zipResp.Body.Close()
+
+	if zipResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch artifact: HTTP %d", zipResp.StatusCode)
+	}
+
+	// Create output file
+	outFile, err := os.Create(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create output file %q: %w", outputPath, err)
+	}
+	defer outFile.Close()
+
+	// Copy data to file
+	bytesWritten, err := io.Copy(outFile, zipResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write artifact to file: %w", err)
+	}
+
+	// Count files in the archive
+	outFile.Seek(0, 0)
+	zipReader, err := zip.NewReader(outFile, bytesWritten)
+	if err != nil {
+		return &ArtifactDownloadResult{
+			Name:      artifact.Name,
+			ID:        artifact.ID,
+			SavedPath: outputPath,
+			FileCount: 0,
+			TotalSize: bytesWritten,
+		}, nil
+	}
+
+	fileCount := 0
+	for _, file := range zipReader.File {
+		if !file.FileInfo().IsDir() {
+			fileCount++
+		}
+	}
+
+	log.Infof("Downloaded artifact %q to %s (%d bytes, %d files)", artifact.Name, outputPath, bytesWritten, fileCount)
+
+	return &ArtifactDownloadResult{
+		Name:      artifact.Name,
+		ID:        artifact.ID,
+		SavedPath: outputPath,
+		FileCount: fileCount,
+		TotalSize: bytesWritten,
+	}, nil
+}
+
+// isTextContent attempts to detect if content is text or binary
+func isTextContent(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+
+	// Check first 512 bytes for null bytes (indicates binary)
+	sampleSize := 512
+	if len(data) < sampleSize {
+		sampleSize = len(data)
+	}
+
+	for i := 0; i < sampleSize; i++ {
+		if data[i] == 0 {
+			return false
+		}
+	}
+
+	// Check for common text file extensions or content patterns
+	return true
 }
 
 // GetCheckRunsForRef retrieves check runs for a specific ref (commit SHA, branch, or tag)
@@ -1462,4 +1958,101 @@ func formatTime(t *github.Timestamp) string {
 // formatTimeValue formats a github.Timestamp value into an ISO string
 func formatTimeValue(t github.Timestamp) string {
 	return t.String()
+}
+
+// GetLogSection extracts a specific section from logs by header pattern
+// Section headers typically look like "##[group]Section Name" or similar patterns
+// If jobID is 0, it fetches logs for the run; otherwise for the specific job
+func (c *Client) GetLogSection(ctx context.Context, runID, jobID int64, sectionPattern string, filterOpts *LogFilterOptions) (string, error) {
+	var logs string
+	var err error
+
+	// Fetch logs based on whether we have a job ID
+	if jobID > 0 {
+		logs, err = c.GetWorkflowJobLogs(ctx, jobID, 0, 0, 0, false, nil)
+	} else {
+		logs, err = c.GetWorkflowLogs(ctx, runID, 0, 0, 0, false, nil)
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	// Extract the section
+	section, err := extractSection(logs, sectionPattern)
+	if err != nil {
+		return "", err
+	}
+
+	// Apply additional filtering if specified
+	if filterOpts != nil && (filterOpts.Filter != "" || filterOpts.FilterRegex != "") {
+		parsedLines := parseLogLines(section)
+		filteredLines, err := filterLogLines(parsedLines, filterOpts)
+		if err != nil {
+			return "", err
+		}
+		if filteredLines == nil {
+			return "", nil
+		}
+		section = linesToString(filteredLines)
+	}
+
+	return section, nil
+}
+
+// extractSection parses logs and extracts content between section markers
+// GitHub Actions logs use ##[group]Section Name and ##[endgroup] markers
+func extractSection(logs string, sectionPattern string) (string, error) {
+	if sectionPattern == "" {
+		return logs, nil
+	}
+
+	lines := strings.Split(logs, "\n")
+	var result []string
+	inSection := false
+	sectionDepth := 0
+
+	// Compile regex for matching section headers
+	re, err := getCachedRegex(sectionPattern)
+	if err != nil {
+		return "", fmt.Errorf("invalid section pattern %q: %w", sectionPattern, err)
+	}
+
+	for _, line := range lines {
+		// Check for group start (various formats)
+		// GitHub Actions uses: ##[group]Section Name
+		// Also handle: ::group::Section Name
+		isGroupStart := strings.Contains(line, "##[group]") || strings.Contains(line, "::group::")
+		isGroupEnd := strings.Contains(line, "##[endgroup]") || strings.Contains(line, "::endgroup::")
+
+		if isGroupStart {
+			sectionDepth++
+			// Check if this is the section we're looking for
+			if !inSection && re.MatchString(line) {
+				inSection = true
+				result = append(result, line)
+			}
+		} else if isGroupEnd {
+			if inSection {
+				result = append(result, line)
+				sectionDepth--
+				if sectionDepth == 0 {
+					inSection = false
+				}
+			} else {
+				sectionDepth--
+				if sectionDepth < 0 {
+					sectionDepth = 0
+				}
+			}
+		} else if inSection {
+			result = append(result, line)
+		}
+	}
+
+	if len(result) == 0 {
+		return "", fmt.Errorf("section matching pattern %q not found", sectionPattern)
+	}
+
+	return strings.Join(result, "\n"), nil
 }

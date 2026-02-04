@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,6 +25,21 @@ var (
 	logLevel  string
 )
 
+// Logs command flags
+var (
+	logsSearch    string
+	logsRegex     string
+	logsSection   string
+	logsContext   int
+	logsTail      int
+	logsHead      int
+	logsOffset    int
+	logsNoHeaders bool
+	logsJobID     int64
+	logsOwner     string
+	logsRepo      string
+)
+
 var log = logrus.New()
 
 func init() {
@@ -40,6 +56,9 @@ func init() {
 
 	// Infer repo from git origin
 	rootCmd.AddCommand(inferCmd)
+
+	// Add logs command
+	rootCmd.AddCommand(logsCmd)
 }
 
 var rootCmd = &cobra.Command{
@@ -176,6 +195,162 @@ func inferRepoFromGit(cfg *config.Config) error {
 	}
 
 	log.Infof("Inferred repository from git: %s/%s", owner, repo)
+	return nil
+}
+
+var logsCmd = &cobra.Command{
+	Use:   "logs [URL|run-id|job-id]",
+	Short: "Fetch logs for a workflow run or job",
+	Long: `Fetch and filter logs from GitHub Actions workflow runs or jobs.
+
+CONCEPTS:
+  Workflow    - A YAML file defining a CI/CD process (e.g., build.yml)
+  Run         - A specific execution of a workflow (has a run ID)
+  Job         - A step within a workflow run (has a job ID)
+  Section     - A grouped portion of logs (marked by ##[group]...##[endgroup])
+
+Supports GitHub Actions URLs:
+  - Run URL: https://github.com/owner/repo/actions/runs/123456
+  - Job URL: https://github.com/owner/repo/actions/runs/123456/job/789012
+
+Examples:
+  # Get all logs for a run
+  gh-actions-mcp logs 21662021288
+
+  # Get logs from a URL
+  gh-actions-mcp logs https://github.com/denysvitali/gps-tracker-tr003-v2/actions/runs/21662021288/job/62449039965
+
+  # Filter for specific text
+  gh-actions-mcp logs 21662021288 --search "OTA task started"
+
+  # Get specific section
+  gh-actions-mcp logs 21662021288 --section "Flash and soak test"
+
+  # Use regex filter
+  gh-actions-mcp logs 21662021288 --regex "OTA.*started"
+
+TIPS:
+  - If you get a 404 error, the run ID might not exist. List runs using the MCP tool:
+    list_workflow_runs or list_repository_workflow_runs
+  - When using a URL, owner/repo are extracted from the URL automatically
+  - Use --job-id to get logs for a specific job within a run
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: runLogs,
+}
+
+func init() {
+	logsCmd.Flags().StringVarP(&logsSearch, "search", "s", "", "Filter lines containing substring")
+	logsCmd.Flags().StringVar(&logsRegex, "regex", "", "Filter lines matching regex pattern")
+	logsCmd.Flags().StringVar(&logsSection, "section", "", "Extract a specific section by name/pattern")
+	logsCmd.Flags().IntVarP(&logsContext, "context", "C", 0, "Show N lines of context around matches")
+	logsCmd.Flags().IntVar(&logsTail, "tail", 0, "Show last N lines")
+	logsCmd.Flags().IntVar(&logsHead, "head", 0, "Show first N lines")
+	logsCmd.Flags().IntVar(&logsOffset, "offset", 0, "Skip first N lines")
+	logsCmd.Flags().BoolVar(&logsNoHeaders, "no-headers", false, "Don't print file headers")
+	logsCmd.Flags().Int64VarP(&logsJobID, "job-id", "j", 0, "Specific job ID (when using run ID)")
+	logsCmd.Flags().StringVar(&logsOwner, "owner", "", "Override repo owner")
+	logsCmd.Flags().StringVar(&logsRepo, "repo", "", "Override repo name")
+}
+
+func runLogs(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Load config
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Override with CLI flags
+	if logsOwner != "" {
+		cfg.RepoOwner = logsOwner
+	}
+	if logsRepo != "" {
+		cfg.RepoName = logsRepo
+	}
+
+	// Parse the argument (URL or ID)
+	arg := args[0]
+
+	var owner, repo string
+	var runID, jobID int64
+
+	// Check if it's a URL
+	if github.IsActionsURL(arg) {
+		parsed, err := github.ParseActionsURL(arg)
+		if err != nil {
+			return fmt.Errorf("failed to parse URL: %w", err)
+		}
+		owner = parsed.Owner
+		repo = parsed.Repo
+		runID = parsed.RunID
+		jobID = parsed.JobID
+	} else {
+		// Try to parse as run ID
+		id, err := github.ParseRunID(arg)
+		if err != nil {
+			return fmt.Errorf("invalid run ID: %w", err)
+		}
+		runID = id
+		jobID = logsJobID
+		owner = cfg.RepoOwner
+		repo = cfg.RepoName
+	}
+
+	// Validate we have owner and repo
+	if owner == "" || repo == "" {
+		return fmt.Errorf("repository owner and name must be specified via URL, config, or --owner/--repo flags")
+	}
+
+	// Create GitHub client
+	client := github.NewClient(cfg.Token, owner, repo)
+
+	// Prepare filter options
+	filterOpts := &github.LogFilterOptions{}
+	if logsSearch != "" {
+		filterOpts.Filter = logsSearch
+	}
+	if logsRegex != "" {
+		filterOpts.FilterRegex = logsRegex
+	}
+	filterOpts.ContextLines = logsContext
+
+	// Fetch logs
+	var logs string
+
+	if logsSection != "" {
+		// Extract specific section
+		logs, err = client.GetLogSection(ctx, runID, jobID, logsSection, filterOpts)
+	} else if jobID > 0 {
+		// Get logs for specific job
+		logs, err = client.GetWorkflowJobLogs(ctx, jobID, logsHead, logsTail, logsOffset, logsNoHeaders, filterOpts)
+	} else {
+		// Get logs for run
+		logs, err = client.GetWorkflowLogs(ctx, runID, logsHead, logsTail, logsOffset, logsNoHeaders, filterOpts)
+	}
+
+	if err != nil {
+		// Provide helpful error messages for common HTTP errors
+		if github.IsHTTPError(err, 404) {
+			return fmt.Errorf("run or job not found (404). The run ID %d might not exist in %s/%s. Use the MCP tool list_repository_workflow_runs to find valid run IDs", runID, owner, repo)
+		}
+		if github.IsHTTPError(err, 401) {
+			return fmt.Errorf("authentication failed (401). Your token may not have access to %s/%s or the repository is private", owner, repo)
+		}
+		return fmt.Errorf("failed to get logs: %w", err)
+	}
+
+	// Output results
+	if logs == "" {
+		fmt.Println("(no matching logs)")
+	} else {
+		fmt.Print(logs)
+	}
+
 	return nil
 }
 
