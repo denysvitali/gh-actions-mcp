@@ -2056,3 +2056,74 @@ func extractSection(logs string, sectionPattern string) (string, error) {
 
 	return strings.Join(result, "\n"), nil
 }
+
+// LogSection represents a section found in workflow logs
+type LogSection struct {
+	Name     string `json:"name"`
+	Line     int    `json:"line"`
+	JobName  string `json:"job_name,omitempty"`
+}
+
+// ListLogSections extracts all section headers from workflow logs
+// Returns a list of sections with their names and line numbers
+func (c *Client) ListLogSections(ctx context.Context, runID, jobID int64) ([]*LogSection, error) {
+	var logs string
+	var err error
+
+	// Fetch logs based on whether we have a job ID
+	if jobID > 0 {
+		logs, err = c.GetWorkflowJobLogs(ctx, jobID, 0, 0, 0, false, nil)
+	} else {
+		logs, err = c.GetWorkflowLogs(ctx, runID, 0, 0, 0, false, nil)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return extractSections(logs), nil
+}
+
+// extractSections parses logs and returns all section headers found
+// GitHub Actions logs use ##[group]Section Name and ::group::Section Name markers
+func extractSections(logs string) []*LogSection {
+	lines := strings.Split(logs, "\n")
+	var sections []*LogSection
+	currentJob := ""
+
+	for i, line := range lines {
+		// Check for job header (=== filename ===)
+		if strings.HasPrefix(line, "=== ") && strings.HasSuffix(line, " ===") {
+			currentJob = strings.TrimPrefix(strings.TrimSuffix(line, " ==="), "=== ")
+			continue
+		}
+
+		// Check for group start markers
+		var sectionName string
+		if strings.Contains(line, "##[group]") {
+			sectionName = extractSectionName(line, "##[group]")
+		} else if strings.Contains(line, "::group::") {
+			sectionName = extractSectionName(line, "::group::")
+		}
+
+		if sectionName != "" {
+			sections = append(sections, &LogSection{
+				Name:    sectionName,
+				Line:    i + 1, // 1-based line number
+				JobName: currentJob,
+			})
+		}
+	}
+
+	return sections
+}
+
+// extractSectionName extracts the section name after a marker
+func extractSectionName(line, marker string) string {
+	idx := strings.Index(line, marker)
+	if idx == -1 {
+		return ""
+	}
+	name := line[idx+len(marker):]
+	return strings.TrimSpace(name)
+}

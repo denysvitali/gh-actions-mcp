@@ -177,7 +177,7 @@ func (s *MCPServer) registerTools() {
 			mcp.Required(),
 		),
 		mcp.WithString("element",
-			mcp.Description("Element to retrieve: info (default), jobs, logs, log_files, artifacts, artifact_content"),
+			mcp.Description("Element to retrieve: info (default), jobs, logs, log_files, log_sections, artifacts, artifact_content"),
 			mcp.DefaultString("info"),
 		),
 		mcp.WithNumber("artifact_id",
@@ -495,6 +495,8 @@ func (s *MCPServer) getRun(ctx context.Context, request mcp.CallToolRequest) (*m
 		return s.getRunLogs(ctx, runID, args)
 	case "log_files":
 		return s.getLogFiles(ctx, runID, args)
+	case "log_sections":
+		return s.getLogSections(ctx, runID, args)
 	case "artifacts":
 		return s.getRunArtifacts(ctx, runID, args)
 	case "artifact_content":
@@ -817,6 +819,31 @@ func (s *MCPServer) getLogFiles(ctx context.Context, runID int64, args map[strin
 		return jsonResultPretty(logFiles)
 	}
 	return jsonResult(logFiles)
+}
+
+func (s *MCPServer) getLogSections(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	// Check if getting sections for a specific job
+	var jobID int64
+	if jobIDFloat, ok := args["job_id"].(float64); ok {
+		jobID = int64(jobIDFloat)
+	}
+
+	s.log.Infof("Getting log sections for run %d (job_id: %d)", runID, jobID)
+
+	sections, err := s.client.ListLogSections(ctx, runID, jobID)
+	if err != nil {
+		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get log sections for run %d", runID))), nil
+	}
+
+	format := s.getFormat()
+	if f, ok := args["format"].(string); ok {
+		format = f
+	}
+
+	if format == "full" {
+		return jsonResultPretty(sections)
+	}
+	return jsonResult(sections)
 }
 
 func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
