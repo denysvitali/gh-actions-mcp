@@ -117,10 +117,14 @@ func IsAuthenticationError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
+	errStr := strings.ToLower(err.Error())
 	// GitHub returns 404 for private repos when not authenticated
 	return strings.Contains(errStr, "404") ||
 		strings.Contains(errStr, "401") ||
-		strings.Contains(errStr, "Bad credentials") ||
-		strings.Contains(errStr, "authentication")
+		strings.Contains(errStr, "403") ||
+		strings.Contains(errStr, "bad credentials") ||
+		strings.Contains(errStr, "authentication") ||
+		strings.Contains(errStr, "resource not accessible by personal access token") ||
+		strings.Contains(errStr, "insufficient permission") ||
+		strings.Contains(errStr, "forbidden")
 }

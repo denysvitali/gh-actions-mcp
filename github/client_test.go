@@ -1,11 +1,17 @@
 package github
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
+	githubapi "github.com/google/go-github/v69/github"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -249,35 +255,35 @@ func TestTokenIsSentInRequest(t *testing.T) {
 // Test error scenarios
 func TestNewClientWithPerPage(t *testing.T) {
 	tests := []struct {
-		name         string
-		token        string
-		owner        string
-		repo         string
-		perPageLimit int
+		name          string
+		token         string
+		owner         string
+		repo          string
+		perPageLimit  int
 		expectedLimit int
 	}{
 		{
-			name:         "valid limit",
-			token:        "token",
-			owner:        "owner",
-			repo:         "repo",
-			perPageLimit: 100,
+			name:          "valid limit",
+			token:         "token",
+			owner:         "owner",
+			repo:          "repo",
+			perPageLimit:  100,
 			expectedLimit: 100,
 		},
 		{
-			name:         "zero limit uses default",
-			token:        "token",
-			owner:        "owner",
-			repo:         "repo",
-			perPageLimit: 0,
+			name:          "zero limit uses default",
+			token:         "token",
+			owner:         "owner",
+			repo:          "repo",
+			perPageLimit:  0,
 			expectedLimit: 50,
 		},
 		{
-			name:         "negative limit uses default",
-			token:        "token",
-			owner:        "owner",
-			repo:         "repo",
-			perPageLimit: -10,
+			name:          "negative limit uses default",
+			token:         "token",
+			owner:         "owner",
+			repo:          "repo",
+			perPageLimit:  -10,
 			expectedLimit: 50,
 		},
 	}
@@ -322,7 +328,7 @@ func TestClient_TriggerWorkflow_ErrorHandling(t *testing.T) {
 			name:       "empty workflow ID",
 			workflowID: "",
 			ref:        "main",
-			expectErr:   true,
+			expectErr:  true,
 		},
 	}
 
@@ -968,4 +974,153 @@ func TestSplitLines(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestGetWorkflowJobLogs_RedirectPlainTextWithoutAuthHeader(t *testing.T) {
+	const (
+		owner = "example-owner"
+		repo  = "example-repo"
+		jobID = int64(12345)
+	)
+
+	mux := http.NewServeMux()
+	redirectBase := ""
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/jobs/12345/logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"missing auth"}`))
+			return
+		}
+		w.Header().Set("Location", redirectBase+"/blob/job.log")
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/blob/job.log", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("InvalidAuthenticationInfo"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("line-1\nline-2\nline-3\n"))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	redirectBase = ts.URL
+
+	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
+	baseURL, err := url.Parse(ts.URL + "/")
+	assert.NoError(t, err)
+	ghc.BaseURL = baseURL
+
+	client := &Client{
+		owner:        owner,
+		repo:         repo,
+		gh:           ghc,
+		perPageLimit: 50,
+	}
+
+	logs, err := client.GetWorkflowJobLogs(context.Background(), jobID, 0, 0, 0, true, nil)
+	assert.NoError(t, err)
+	assert.Contains(t, logs, "line-1")
+	assert.Contains(t, logs, "line-3")
+	assert.NotContains(t, logs, "InvalidAuthenticationInfo")
+}
+
+func TestGetWorkflowJobLogs_RedirectZipStillWorks(t *testing.T) {
+	const (
+		owner = "example-owner"
+		repo  = "example-repo"
+		jobID = int64(12345)
+	)
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	f, err := zw.Create("step-1.log")
+	assert.NoError(t, err)
+	_, err = io.WriteString(f, "zip-line-1\nzip-line-2\n")
+	assert.NoError(t, err)
+	assert.NoError(t, zw.Close())
+
+	mux := http.NewServeMux()
+	redirectBase := ""
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/jobs/12345/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectBase+"/blob/job.zip")
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/blob/job.zip", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipBuf.Bytes())
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	redirectBase = ts.URL
+
+	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
+	baseURL, err := url.Parse(ts.URL + "/")
+	assert.NoError(t, err)
+	ghc.BaseURL = baseURL
+
+	client := &Client{
+		owner:        owner,
+		repo:         repo,
+		gh:           ghc,
+		perPageLimit: 50,
+	}
+
+	logs, err := client.GetWorkflowJobLogs(context.Background(), jobID, 0, 0, 0, false, nil)
+	assert.NoError(t, err)
+	assert.Contains(t, logs, "=== step-1.log ===")
+	assert.Contains(t, logs, "zip-line-2")
+}
+
+func TestGetCheckRunsForRef_UsesWorkflowRunsNotChecksAPI(t *testing.T) {
+	const (
+		owner = "example-owner"
+		repo  = "example-repo"
+	)
+
+	checksEndpointCalled := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "main", r.URL.Query().Get("branch"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+		  "total_count": 3,
+		  "workflow_runs": [
+		    {"id": 11, "name": "Build", "status": "completed", "conclusion": "failure", "run_number": 11, "html_url": "https://example.test/r/11"},
+		    {"id": 10, "name": "Build", "status": "completed", "conclusion": "success", "run_number": 10, "html_url": "https://example.test/r/10"},
+		    {"id": 12, "name": "Lint",  "status": "in_progress", "conclusion": null, "run_number": 5, "html_url": "https://example.test/r/12"}
+		  ]
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/commits/main/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		checksEndpointCalled = true
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"should not be called"}`))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
+	baseURL, err := url.Parse(ts.URL + "/")
+	assert.NoError(t, err)
+	ghc.BaseURL = baseURL
+
+	client := &Client{
+		owner:        owner,
+		repo:         repo,
+		gh:           ghc,
+		perPageLimit: 50,
+	}
+
+	status, err := client.GetCheckRunsForRef(context.Background(), "main", &GetCheckRunsOptions{Filter: "latest"})
+	assert.NoError(t, err)
+	assert.False(t, checksEndpointCalled)
+	assert.Equal(t, 2, status.TotalCount)
+	assert.Equal(t, "pending", status.State)
+	assert.Equal(t, 1, status.ByConclusion["failure"])
+	assert.Equal(t, 1, status.ByConclusion["in_progress"])
 }

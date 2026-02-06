@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -157,8 +158,8 @@ func TestSetLogger(t *testing.T) {
 func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
 	// Test that GITHUB_* prefixed environment variables work
 	tests := []struct {
-		name         string
-		envVars      map[string]string
+		name          string
+		envVars       map[string]string
 		expectedToken string
 		expectedOwner string
 		expectedRepo  string
@@ -166,9 +167,9 @@ func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
 		{
 			name: "GITHUB_* prefix works",
 			envVars: map[string]string{
-				"GITHUB_TOKEN":       "github-token",
-				"GITHUB_REPO_OWNER":  "github-owner",
-				"GITHUB_REPO_NAME":   "github-repo",
+				"GITHUB_TOKEN":      "github-token",
+				"GITHUB_REPO_OWNER": "github-owner",
+				"GITHUB_REPO_NAME":  "github-repo",
 			},
 			expectedToken: "github-token",
 			expectedOwner: "github-owner",
@@ -177,9 +178,9 @@ func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
 		{
 			name: "GH_* prefix works",
 			envVars: map[string]string{
-				"GH_TOKEN":       "gh-token",
-				"GH_REPO_OWNER":  "gh-owner",
-				"GH_REPO_NAME":   "gh-repo",
+				"GH_TOKEN":      "gh-token",
+				"GH_REPO_OWNER": "gh-owner",
+				"GH_REPO_NAME":  "gh-repo",
 			},
 			expectedToken: "gh-token",
 			expectedOwner: "gh-owner",
@@ -188,12 +189,12 @@ func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
 		{
 			name: "GITHUB_* takes precedence over GH_*",
 			envVars: map[string]string{
-				"GITHUB_TOKEN":       "github-token",
-				"GH_TOKEN":           "gh-token",
-				"GITHUB_REPO_OWNER":  "github-owner",
-				"GH_REPO_OWNER":      "gh-owner",
-				"GITHUB_REPO_NAME":   "github-repo",
-				"GH_REPO_NAME":       "gh-repo",
+				"GITHUB_TOKEN":      "github-token",
+				"GH_TOKEN":          "gh-token",
+				"GITHUB_REPO_OWNER": "github-owner",
+				"GH_REPO_OWNER":     "gh-owner",
+				"GITHUB_REPO_NAME":  "github-repo",
+				"GH_REPO_NAME":      "gh-repo",
 			},
 			expectedToken: "github-token",
 			expectedOwner: "github-owner",
@@ -225,25 +226,25 @@ func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
 
 func TestLoad_PerPageLimit(t *testing.T) {
 	tests := []struct {
-		name           string
-		configContent  string
-		envValue       string
-		expectedLimit  int
+		name          string
+		configContent string
+		envValue      string
+		expectedLimit int
 	}{
 		{
-			name: "default per_page_limit",
+			name:          "default per_page_limit",
 			configContent: "",
 			envValue:      "",
 			expectedLimit: 50,
 		},
 		{
-			name: "per_page_limit from config file",
+			name:          "per_page_limit from config file",
 			configContent: "per_page_limit: 100",
 			envValue:      "",
 			expectedLimit: 100,
 		},
 		{
-			name: "GITHUB_PER_PAGE_LIMIT env var",
+			name:          "GITHUB_PER_PAGE_LIMIT env var",
 			configContent: "",
 			envValue:      "75",
 			expectedLimit: 75,
@@ -272,6 +273,46 @@ func TestLoad_PerPageLimit(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.expectedLimit, cfg.PerPageLimit)
+		})
+	}
+}
+
+func TestIsAuthenticationError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "401 unauthorized",
+			err:  errors.New("failed request: HTTP 401"),
+			want: true,
+		},
+		{
+			name: "403 pat limitation",
+			err:  errors.New("403 Resource not accessible by personal access token"),
+			want: true,
+		},
+		{
+			name: "forbidden text",
+			err:  errors.New("forbidden by policy"),
+			want: true,
+		},
+		{
+			name: "non-auth error",
+			err:  errors.New("validation failed"),
+			want: false,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsAuthenticationError(tt.err))
 		})
 	}
 }

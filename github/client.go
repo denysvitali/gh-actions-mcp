@@ -164,45 +164,45 @@ type WorkflowRunCompact struct {
 
 // WorkflowRunFull is the complete workflow run representation
 type WorkflowRunFull struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	Conclusion   string `json:"conclusion"`
-	Branch       string `json:"branch"`
-	Event        string `json:"event"`
-	Actor        string `json:"actor"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-	URL          string `json:"url"`
-	RunNumber    int    `json:"run_number"`
-	WorkflowID   int64  `json:"workflow_id"`
-	HeadSHA      string `json:"head_sha"`
-	StartedAt    string `json:"started_at,omitempty"`
-	CompletedAt  string `json:"completed_at,omitempty"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	Branch      string `json:"branch"`
+	Event       string `json:"event"`
+	Actor       string `json:"actor"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	URL         string `json:"url"`
+	RunNumber   int    `json:"run_number"`
+	WorkflowID  int64  `json:"workflow_id"`
+	HeadSHA     string `json:"head_sha"`
+	StartedAt   string `json:"started_at,omitempty"`
+	CompletedAt string `json:"completed_at,omitempty"`
 }
 
 // Job represents a workflow run job
 type Job struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	Conclusion   string `json:"conclusion,omitempty"`
-	StartedAt    string `json:"started_at,omitempty"`
-	CompletedAt  string `json:"completed_at,omitempty"`
-	RunnerName   string `json:"runner_name,omitempty"`
-	RunnerGroup  string `json:"runner_group,omitempty"`
-	Labels       []string `json:"labels,omitempty"`
-	WorkflowRunID int64  `json:"workflow_run_id"`
+	ID            int64    `json:"id"`
+	Name          string   `json:"name"`
+	Status        string   `json:"status"`
+	Conclusion    string   `json:"conclusion,omitempty"`
+	StartedAt     string   `json:"started_at,omitempty"`
+	CompletedAt   string   `json:"completed_at,omitempty"`
+	RunnerName    string   `json:"runner_name,omitempty"`
+	RunnerGroup   string   `json:"runner_group,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	WorkflowRunID int64    `json:"workflow_run_id"`
 }
 
 // Artifact represents a workflow run artifact
 type Artifact struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
-	SizeInBytes  int64  `json:"size_in_bytes"`
-	CreatedAt    string `json:"created_at"`
-	ExpiresAt    string `json:"expires_at,omitempty"`
-	ArchiveURL   string `json:"archive_url,omitempty"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	SizeInBytes int64  `json:"size_in_bytes"`
+	CreatedAt   string `json:"created_at"`
+	ExpiresAt   string `json:"expires_at,omitempty"`
+	ArchiveURL  string `json:"archive_url,omitempty"`
 }
 
 // ArtifactFile represents a single file within an artifact
@@ -224,11 +224,11 @@ type ArtifactContent struct {
 
 // ArtifactDownloadResult represents the result of downloading an artifact
 type ArtifactDownloadResult struct {
-	Name        string `json:"name"`
-	ID          int64  `json:"id"`
-	SavedPath   string `json:"saved_path"`
-	FileCount   int    `json:"file_count"`
-	TotalSize   int64  `json:"total_size"`
+	Name      string `json:"name"`
+	ID        int64  `json:"id"`
+	SavedPath string `json:"saved_path"`
+	FileCount int    `json:"file_count"`
+	TotalSize int64  `json:"total_size"`
 }
 
 // LogFileInfo represents information about a single log file in the archive
@@ -251,61 +251,61 @@ type CheckRun struct {
 
 // CombinedCheckStatus represents the combined status of all check runs for a commit
 type CombinedCheckStatus struct {
-	SHA          string      `json:"sha"`
-	State        string      `json:"state"` // "pending", "success", "failure", "neutral"
-	TotalCount   int         `json:"total_count"`
-	CheckRuns    []*CheckRun `json:"check_runs"`
+	SHA          string         `json:"sha"`
+	State        string         `json:"state"` // "pending", "success", "failure", "neutral"
+	TotalCount   int            `json:"total_count"`
+	CheckRuns    []*CheckRun    `json:"check_runs"`
 	ByConclusion map[string]int `json:"by_conclusion"`
 }
 
 // WaitRunResult is the result of waiting for a workflow run
 type WaitRunResult struct {
-	Status           string  `json:"status"`           // "completed", "timed_out"
-	Conclusion       string  `json:"conclusion,omitempty"` // "success", "failure", etc.
-	DurationSeconds  float64 `json:"duration_seconds"`
-	RunURL           string  `json:"run_url"`
-	StartedAt        string  `json:"started_at,omitempty"`
-	CompletedAt      string  `json:"completed_at,omitempty"`
-	TimeoutReached   bool    `json:"timeout_reached"`
-	PollCount        int     `json:"poll_count"`
+	Status          string  `json:"status"`               // "completed", "timed_out"
+	Conclusion      string  `json:"conclusion,omitempty"` // "success", "failure", etc.
+	DurationSeconds float64 `json:"duration_seconds"`
+	RunURL          string  `json:"run_url"`
+	StartedAt       string  `json:"started_at,omitempty"`
+	CompletedAt     string  `json:"completed_at,omitempty"`
+	TimeoutReached  bool    `json:"timeout_reached"`
+	PollCount       int     `json:"poll_count"`
 }
 
 // WaitCommitChecksResult is the result of waiting for commit checks
 type WaitCommitChecksResult struct {
-	OverallConclusion string  `json:"overall_conclusion"` // "success", "failure", "pending", "neutral"
-	ChecksTotal       int     `json:"checks_total"`
+	OverallConclusion  string         `json:"overall_conclusion"` // "success", "failure", "pending", "neutral"
+	ChecksTotal        int            `json:"checks_total"`
 	ChecksByConclusion map[string]int `json:"checks_by_conclusion"`
-	DurationSeconds   float64 `json:"duration_seconds"`
-	TimeoutReached    bool    `json:"timeout_reached"`
+	DurationSeconds    float64        `json:"duration_seconds"`
+	TimeoutReached     bool           `json:"timeout_reached"`
 }
 
 // ManageRunAction represents an action to take on a workflow run
 type ManageRunAction string
 
 const (
-	ManageRunActionCancel        ManageRunAction = "cancel"
-	ManageRunActionRerun         ManageRunAction = "rerun"
-	ManageRunActionRerunFailed   ManageRunAction = "rerun_failed"
+	ManageRunActionCancel      ManageRunAction = "cancel"
+	ManageRunActionRerun       ManageRunAction = "rerun"
+	ManageRunActionRerunFailed ManageRunAction = "rerun_failed"
 )
 
 // ManageRunResult is the result of managing a workflow run
 type ManageRunResult struct {
-	RunID   int64            `json:"run_id"`
-	Action  ManageRunAction  `json:"action"`
-	Status  string           `json:"status"` // "success", "failed"
-	Message string           `json:"message,omitempty"`
+	RunID   int64           `json:"run_id"`
+	Action  ManageRunAction `json:"action"`
+	Status  string          `json:"status"` // "success", "failed"
+	Message string          `json:"message,omitempty"`
 }
 
 // ListRunsOptions contains parameters for listing workflow runs
 type ListRunsOptions struct {
-	WorkflowID  *int64  // Optional: filter by workflow ID
-	Branch      string  // Optional: filter by branch
-	Status      string  // Optional: queued, in_progress, completed, etc.
-	Conclusion  string  // Optional: success, failure, neutral, cancelled, etc.
-	Per_page    int     // Optional: number of results per page
+	WorkflowID   *int64 // Optional: filter by workflow ID
+	Branch       string // Optional: filter by branch
+	Status       string // Optional: queued, in_progress, completed, etc.
+	Conclusion   string // Optional: success, failure, neutral, cancelled, etc.
+	Per_page     int    // Optional: number of results per page
 	CreatedAfter string // Optional: ISO 8601 date string
-	Event       string  // Optional: push, pull_request, etc.
-	Actor       string  // Optional: GitHub username
+	Event        string // Optional: push, pull_request, etc.
+	Actor        string // Optional: GitHub username
 }
 
 // GetCheckRunsOptions contains parameters for getting check runs
@@ -1241,8 +1241,13 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 		}
 	}
 
-	// Fetch the ZIP file
-	zipResp, err := c.gh.Client().Get(url.String())
+	// Fetch the redirected payload URL without auth headers.
+	// Some storage backends reject Authorization headers on pre-signed URLs.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build job log request for job %d: %w", jobID, err)
+	}
+	zipResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch job logs for job %d: %w", jobID, err)
 	}
@@ -1252,46 +1257,43 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 		return "", &HTTPError{StatusCode: zipResp.StatusCode, Message: fmt.Sprintf("failed to fetch job logs: HTTP %d", zipResp.StatusCode)}
 	}
 
-	// Read the ZIP data
+	// Read the payload data (may be ZIP or plain text).
 	zipData, err := io.ReadAll(zipResp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read job logs for job %d: %w", jobID, err)
 	}
 
-	// Open the ZIP archive
-	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
-	if err != nil {
-		return "", fmt.Errorf("failed to open log archive for job %d: %w", jobID, err)
-	}
-
-	// Collect all log files (inline struct)
-	type logFile struct {
-		name string
-		data string
-	}
+	// Collect all log files from ZIP payload when available.
+	// GitHub may also return plain text for job log downloads.
 	var logFiles []logFile
+	if zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData))); err == nil {
+		for _, file := range zipReader.File {
+			if file.FileInfo().IsDir() {
+				continue
+			}
 
-	for _, file := range zipReader.File {
-		if file.FileInfo().IsDir() {
-			continue
+			rc, err := file.Open()
+			if err != nil {
+				log.Debugf("Warning: could not open %s in log archive: %v", file.Name, err)
+				continue
+			}
+
+			content, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				log.Debugf("Warning: could not read %s in log archive: %v", file.Name, err)
+				continue
+			}
+
+			logFiles = append(logFiles, logFile{
+				name: file.Name,
+				data: string(content),
+			})
 		}
-
-		rc, err := file.Open()
-		if err != nil {
-			log.Debugf("Warning: could not open %s in log archive: %v", file.Name, err)
-			continue
-		}
-
-		content, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			log.Debugf("Warning: could not read %s in log archive: %v", file.Name, err)
-			continue
-		}
-
+	} else {
 		logFiles = append(logFiles, logFile{
-			name: file.Name,
-			data: string(content),
+			name: fmt.Sprintf("job-%d.log", jobID),
+			data: string(zipData),
 		})
 	}
 
@@ -1622,29 +1624,91 @@ func isTextContent(data []byte) bool {
 	return true
 }
 
-// GetCheckRunsForRef retrieves check runs for a specific ref (commit SHA, branch, or tag)
+func isLikelyCommitRef(ref string) bool {
+	if len(ref) < 7 || len(ref) > 40 {
+		return false
+	}
+	for _, ch := range ref {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') && (ch < 'A' || ch > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// GetCheckRunsForRef retrieves status information for a ref using workflow runs.
+// It intentionally avoids the GitHub Checks API because many PATs cannot access it.
 func (c *Client) GetCheckRunsForRef(ctx context.Context, ref string, opts *GetCheckRunsOptions) (*CombinedCheckStatus, error) {
-	githubOpts := &github.ListCheckRunsOptions{
+	if ref == "" {
+		commit, err := GetLastCommit()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current commit: %w", err)
+		}
+		ref = commit.SHA
+	}
+
+	runOpts := &github.ListWorkflowRunsOptions{
 		ListOptions: github.ListOptions{PerPage: c.perPageLimit},
 	}
 
-	if opts != nil {
-		if opts.CheckName != "" {
-			githubOpts.CheckName = &opts.CheckName
-		}
-		if opts.Status != "" {
-			githubOpts.Status = &opts.Status
-		}
-		filter := "latest"
-		if opts.Filter == "all" {
-			filter = "all"
-		}
-		githubOpts.Filter = &filter
+	refIsCommit := isLikelyCommitRef(ref)
+	if !refIsCommit {
+		runOpts.Branch = ref
 	}
 
-	checkRuns, _, err := c.gh.Checks.ListCheckRunsForRef(ctx, c.owner, c.repo, ref, githubOpts)
+	runs, _, err := c.gh.Actions.ListRepositoryWorkflowRuns(ctx, c.owner, c.repo, runOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list check runs for ref %s: %w", ref, err)
+		return nil, fmt.Errorf("failed to list workflow runs for ref %s: %w", ref, err)
+	}
+
+	filterByName := ""
+	filterByStatus := ""
+	filterMode := "latest"
+	if opts != nil {
+		filterByName = opts.CheckName
+		filterByStatus = opts.Status
+		if opts.Filter == "all" {
+			filterMode = "all"
+		}
+	}
+
+	filtered := make([]*github.WorkflowRun, 0)
+	for _, run := range runs.WorkflowRuns {
+		if run == nil {
+			continue
+		}
+		if refIsCommit {
+			headSHA := strings.ToLower(run.GetHeadSHA())
+			if !strings.HasPrefix(headSHA, strings.ToLower(ref)) {
+				continue
+			}
+		}
+		if filterByName != "" && run.GetName() != filterByName {
+			continue
+		}
+		if filterByStatus != "" && run.GetStatus() != filterByStatus {
+			continue
+		}
+		filtered = append(filtered, run)
+	}
+
+	if filterMode != "all" {
+		latestByName := make(map[string]*github.WorkflowRun)
+		for _, run := range filtered {
+			name := run.GetName()
+			if existing, ok := latestByName[name]; !ok {
+				latestByName[name] = run
+			} else {
+				if run.GetRunNumber() > existing.GetRunNumber() {
+					latestByName[name] = run
+				}
+			}
+		}
+		deduped := make([]*github.WorkflowRun, 0, len(latestByName))
+		for _, run := range latestByName {
+			deduped = append(deduped, run)
+		}
+		filtered = deduped
 	}
 
 	result := &CombinedCheckStatus{
@@ -1653,25 +1717,25 @@ func (c *Client) GetCheckRunsForRef(ctx context.Context, ref string, opts *GetCh
 		ByConclusion: make(map[string]int),
 	}
 
-	// Convert check runs
-	for _, cr := range checkRuns.CheckRuns {
+	// Convert workflow runs to check-like entries.
+	for _, run := range filtered {
 		checkRun := &CheckRun{
-			ID:          cr.GetID(),
-			Name:        cr.GetName(),
-			Status:      cr.GetStatus(),
-			Conclusion:  cr.GetConclusion(),
-			StartedAt:   formatTime(cr.StartedAt),
-			CompletedAt: formatTime(cr.CompletedAt),
-			AppName:     cr.App.GetName(),
-			DetailsURL:  cr.GetDetailsURL(),
+			ID:          run.GetID(),
+			Name:        run.GetName(),
+			Status:      run.GetStatus(),
+			Conclusion:  run.GetConclusion(),
+			StartedAt:   formatTime(run.RunStartedAt),
+			CompletedAt: formatTime(run.UpdatedAt),
+			AppName:     "github-actions",
+			DetailsURL:  run.GetHTMLURL(),
 		}
 		result.CheckRuns = append(result.CheckRuns, checkRun)
 
 		// Count by conclusion
-		if cr.GetConclusion() != "" {
-			result.ByConclusion[cr.GetConclusion()]++
-		} else if cr.GetStatus() != "completed" {
-			result.ByConclusion[cr.GetStatus()]++
+		if run.GetConclusion() != "" {
+			result.ByConclusion[run.GetConclusion()]++
+		} else if run.GetStatus() != "completed" {
+			result.ByConclusion[run.GetStatus()]++
 		}
 	}
 
@@ -1847,11 +1911,11 @@ func (c *Client) WaitForCommitChecks(ctx context.Context, ref string, timeoutMin
 					byConclusion[k] = v
 				}
 				return &WaitCommitChecksResult{
-					OverallConclusion: "timed_out",
-					ChecksTotal:       status.TotalCount,
+					OverallConclusion:  "timed_out",
+					ChecksTotal:        status.TotalCount,
 					ChecksByConclusion: byConclusion,
-					DurationSeconds:   elapsed.Seconds(),
-					TimeoutReached:    true,
+					DurationSeconds:    elapsed.Seconds(),
+					TimeoutReached:     true,
 				}, nil
 			}
 			return &WaitCommitChecksResult{
@@ -2059,9 +2123,9 @@ func extractSection(logs string, sectionPattern string) (string, error) {
 
 // LogSection represents a section found in workflow logs
 type LogSection struct {
-	Name     string `json:"name"`
-	Line     int    `json:"line"`
-	JobName  string `json:"job_name,omitempty"`
+	Name    string `json:"name"`
+	Line    int    `json:"line"`
+	JobName string `json:"job_name,omitempty"`
 }
 
 // ListLogSections extracts all section headers from workflow logs

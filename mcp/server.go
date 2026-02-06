@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -25,9 +26,108 @@ type MCPServer struct {
 
 // Default limits for output control
 const (
-	DefaultListLimit = 5   // Default max items for lists (reduced from 10 for token efficiency)
-	DefaultLogLines  = 50  // Default max lines for logs (reduced from 100 for token efficiency)
+	DefaultListLimit = 5  // Default max items for lists (reduced from 10 for token efficiency)
+	DefaultLogLines  = 50 // Default max lines for logs (reduced from 100 for token efficiency)
 )
+
+var validRunElements = []string{
+	"info",
+	"jobs",
+	"logs",
+	"log_files",
+	"log_sections",
+	"artifacts",
+	"artifact_content",
+}
+
+func isValidRunElement(element string) bool {
+	for _, e := range validRunElements {
+		if element == e {
+			return true
+		}
+	}
+	return false
+}
+
+func formatWorkflowStatusSummary(ref string, status *github.CombinedCheckStatus, filterMode string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Workflow Status for %s\n", ref))
+	sb.WriteString(fmt.Sprintf("Overall: %s\n", status.State))
+	sb.WriteString(fmt.Sprintf("Workflows: %d\n", status.TotalCount))
+	sb.WriteString(fmt.Sprintf("Filter Mode: %s\n", filterMode))
+
+	if len(status.ByConclusion) > 0 {
+		keys := make([]string, 0, len(status.ByConclusion))
+		for k := range status.ByConclusion {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		sb.WriteString("By Conclusion:\n")
+		for _, k := range keys {
+			sb.WriteString(fmt.Sprintf("  %s: %d\n", k, status.ByConclusion[k]))
+		}
+	}
+
+	if len(status.CheckRuns) == 0 {
+		sb.WriteString("No matching workflow statuses found.\n")
+		sb.WriteString("Tip: try filter=\"all\" or provide a different ref (branch name or commit SHA).\n")
+		return sb.String()
+	}
+
+	sb.WriteString("Workflow Details:\n")
+	maxItems := len(status.CheckRuns)
+	if maxItems > 20 {
+		maxItems = 20
+	}
+	for i := 0; i < maxItems; i++ {
+		r := status.CheckRuns[i]
+		conclusion := r.Conclusion
+		if conclusion == "" {
+			conclusion = "-"
+		}
+		sb.WriteString(fmt.Sprintf("  - %s: %s/%s (id: %d)\n", r.Name, r.Status, conclusion, r.ID))
+	}
+	if len(status.CheckRuns) > maxItems {
+		sb.WriteString(fmt.Sprintf("  ... and %d more\n", len(status.CheckRuns)-maxItems))
+	}
+
+	return sb.String()
+}
+
+func (s *MCPServer) repoFromArgs(args map[string]interface{}) (string, string, error) {
+	owner := s.config.RepoOwner
+	repo := s.config.RepoName
+
+	if v, ok := args["owner"].(string); ok && strings.TrimSpace(v) != "" {
+		owner = strings.TrimSpace(v)
+	}
+	if v, ok := args["repo"].(string); ok && strings.TrimSpace(v) != "" {
+		repo = strings.TrimSpace(v)
+	}
+	if v, ok := args["repo_owner"].(string); ok && strings.TrimSpace(v) != "" {
+		owner = strings.TrimSpace(v)
+	}
+	if v, ok := args["repo_name"].(string); ok && strings.TrimSpace(v) != "" {
+		repo = strings.TrimSpace(v)
+	}
+
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("repository owner/repo not set. Provide owner and repo arguments")
+	}
+	return owner, repo, nil
+}
+
+func (s *MCPServer) clientFromArgs(args map[string]interface{}) (*github.Client, string, string, error) {
+	owner, repo, err := s.repoFromArgs(args)
+	if err != nil {
+		return nil, "", "", err
+	}
+	perPageLimit := s.config.PerPageLimit
+	if perPageLimit <= 0 {
+		perPageLimit = 50
+	}
+	return github.NewClientWithPerPage(s.config.Token, owner, repo, perPageLimit), owner, repo, nil
+}
 
 // Helper functions to reduce repetition
 
@@ -47,12 +147,42 @@ func (s *MCPServer) getLogLimit() int {
 	return DefaultLogLines
 }
 
-// formatAuthError formats an error message with authentication context
-func (s *MCPServer) formatAuthError(err error, msg string) string {
+func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string {
+	errStr := ""
+	if err != nil {
+		errStr = strings.ToLower(err.Error())
+	}
+
+	if strings.Contains(errStr, "resource not accessible by personal access token") {
+		return fmt.Sprintf("%s: %v\nGitHub rejected the token for this endpoint.\nFor fine-grained PATs, grant repository access plus:\n- Actions: Read (runs/jobs/logs/artifacts)\nFor classic PATs on private repos, include the 'repo' scope.", msg, err)
+	}
+
+	if strings.Contains(errStr, "401") || strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "bad credentials") || strings.Contains(errStr, "log access unauthorized") {
+		return fmt.Sprintf("%s: %v\nGitHub rejected authentication for %s.\nSet a valid GITHUB_TOKEN and ensure it can read Actions data in this repository.", msg, err, repo)
+	}
+
+	if strings.Contains(errStr, "403") || strings.Contains(errStr, "insufficient") || strings.Contains(errStr, "forbidden") {
+		return fmt.Sprintf("%s: %v\nGitHub accepted authentication but denied authorization for %s.\nThe token likely lacks required repository permissions for this operation.", msg, err, repo)
+	}
+
+	if strings.Contains(errStr, "404") {
+		return fmt.Sprintf("%s: %v\nGitHub returned 404 for %s.\nThis usually means the run/ref/artifact is not in this repository, or the token cannot see a private repository.", msg, err, repo)
+	}
+
 	if config.IsAuthenticationError(err) {
-		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set (or run 'gh auth login' on macOS) and has access to %s/%s", err, s.config.RepoOwner, s.config.RepoName)
+		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set (or run 'gh auth login' on macOS) and has access to %s", err, repo)
 	}
 	return fmt.Sprintf("%s: %v", msg, err)
+}
+
+// formatAuthError formats an error message with authentication context
+func (s *MCPServer) formatAuthError(err error, msg string) string {
+	repo := fmt.Sprintf("%s/%s", s.config.RepoOwner, s.config.RepoName)
+	return s.formatAuthErrorWithRepo(err, msg, repo)
+}
+
+func (s *MCPServer) formatAuthErrorForRepo(err error, msg, owner, repo string) string {
+	return s.formatAuthErrorWithRepo(err, msg, fmt.Sprintf("%s/%s", owner, repo))
 }
 
 // jsonResult returns a successful JSON response
@@ -125,6 +255,12 @@ func (s *MCPServer) registerTools() {
 	// Tool: list_workflows
 	s.srv.AddTool(mcp.NewTool("list_workflows",
 		mcp.WithDescription("List all workflows available in the repository"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of workflows to return (default: 5)"),
 			mcp.DefaultNumber(5),
@@ -138,6 +274,12 @@ func (s *MCPServer) registerTools() {
 	// Tool: list_runs
 	s.srv.AddTool(mcp.NewTool("list_runs",
 		mcp.WithDescription("List workflow runs with comprehensive filtering options"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("workflow_id",
 			mcp.Description("Optional: The workflow ID or name (e.g., '12345678' or 'CI') to filter by"),
 		),
@@ -171,13 +313,19 @@ func (s *MCPServer) registerTools() {
 
 	// Tool: get_run
 	s.srv.AddTool(mcp.NewTool("get_run",
-		mcp.WithDescription("Get detailed information about a workflow run, including jobs, logs, artifacts, or artifact content"),
+		mcp.WithDescription("Get workflow run details. Start with element=info, then use jobs/logs/log_sections/artifacts as needed."),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("run_id",
 			mcp.Description("The workflow run ID"),
 			mcp.Required(),
 		),
 		mcp.WithString("element",
-			mcp.Description("Element to retrieve: info (default), jobs, logs, log_files, log_sections, artifacts, artifact_content"),
+			mcp.Description("Element to retrieve: info (default), jobs, logs, log_files, log_sections, artifacts, artifact_content. Invalid values return a validation error with allowed options."),
 			mcp.DefaultString("info"),
 		),
 		mcp.WithNumber("artifact_id",
@@ -188,7 +336,7 @@ func (s *MCPServer) registerTools() {
 		),
 		mcp.WithNumber("max_file_size",
 			mcp.Description("For element=artifact_content: maximum size of individual files to read in bytes (default: 1MB)"),
-			mcp.DefaultNumber(1024 * 1024),
+			mcp.DefaultNumber(1024*1024),
 		),
 		mcp.WithNumber("job_id",
 			mcp.Description("For element=logs: specific job ID to get logs for"),
@@ -232,7 +380,13 @@ func (s *MCPServer) registerTools() {
 
 	// Tool: get_check_status
 	s.srv.AddTool(mcp.NewTool("get_check_status",
-		mcp.WithDescription("Get check run status for a specific commit/branch/tag"),
+		mcp.WithDescription("Get workflow status summary for a commit/branch/tag (derived from workflow runs; no Checks API permission required)."),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithString("ref",
 			mcp.Description("Git ref (commit SHA, branch name, or tag) - default: HEAD of current branch"),
 		),
@@ -243,7 +397,7 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("Optional: filter by status (queued, in_progress, completed)"),
 		),
 		mcp.WithString("filter",
-			mcp.Description("Return latest check runs (default) or all check runs for the ref"),
+			mcp.Description("Return latest workflow statuses (default) or all statuses for the ref. Allowed: latest, all."),
 			mcp.DefaultString("latest"),
 		),
 		mcp.WithString("format",
@@ -255,6 +409,12 @@ func (s *MCPServer) registerTools() {
 	// Tool: wait_for_run
 	s.srv.AddTool(mcp.NewTool("wait_for_run",
 		mcp.WithDescription("Wait silently for a workflow run to complete (no output during polling)"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("run_id",
 			mcp.Description("The workflow run ID to wait for"),
 			mcp.Required(),
@@ -267,7 +427,13 @@ func (s *MCPServer) registerTools() {
 
 	// Tool: wait_for_commit_checks
 	s.srv.AddTool(mcp.NewTool("wait_for_commit_checks",
-		mcp.WithDescription("Wait for all check runs for a commit to complete"),
+		mcp.WithDescription("Wait for workflow statuses for a commit to complete (tool name kept for backward compatibility)."),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithString("ref",
 			mcp.Description("Git ref (commit SHA, branch name, or tag) - default: HEAD"),
 		),
@@ -280,6 +446,12 @@ func (s *MCPServer) registerTools() {
 	// Tool: manage_run
 	s.srv.AddTool(mcp.NewTool("manage_run",
 		mcp.WithDescription("Manage a workflow run (cancel, rerun, or rerun failed jobs)"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("run_id",
 			mcp.Description("The workflow run ID to manage"),
 			mcp.Required(),
@@ -293,6 +465,12 @@ func (s *MCPServer) registerTools() {
 	// Tool: get_artifact
 	s.srv.AddTool(mcp.NewTool("get_artifact",
 		mcp.WithDescription("Get the contents of a workflow run artifact (stream without downloading to disk)"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("artifact_id",
 			mcp.Description("The artifact ID"),
 			mcp.Required(),
@@ -309,6 +487,12 @@ func (s *MCPServer) registerTools() {
 	// Tool: download_artifact
 	s.srv.AddTool(mcp.NewTool("download_artifact",
 		mcp.WithDescription("Download a workflow run artifact to disk"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
 		mcp.WithNumber("artifact_id",
 			mcp.Description("The artifact ID"),
 			mcp.Required(),
@@ -320,24 +504,30 @@ func (s *MCPServer) registerTools() {
 }
 
 func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
 	limit := s.getLimit()
 
-	if l, ok := request.GetArguments()["limit"]; ok {
+	if l, ok := args["limit"]; ok {
 		if n, err := strconv.Atoi(fmt.Sprintf("%.0f", l)); err == nil {
 			limit = n
 		}
 	}
 
 	format := s.getFormat()
-	if f, ok := request.GetArguments()["format"].(string); ok {
+	if f, ok := args["format"].(string); ok {
 		format = f
 	}
 
-	s.log.Infof("Listing workflows for %s/%s (limit: %d, format: %s)", s.config.RepoOwner, s.config.RepoName, limit, format)
-
-	workflows, err := s.client.GetWorkflows(ctx)
+	client, owner, repo, err := s.clientFromArgs(args)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to list workflows")), nil
+		return errorResult(err.Error()), nil
+	}
+
+	s.log.Infof("Listing workflows for %s/%s (limit: %d, format: %s)", owner, repo, limit, format)
+
+	workflows, err := client.GetWorkflows(ctx)
+	if err != nil {
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to list workflows", owner, repo)), nil
 	}
 
 	// Apply limit
@@ -359,6 +549,10 @@ func (s *MCPServer) listWorkflows(ctx context.Context, request mcp.CallToolReque
 
 func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	// Build options
 	opts := &github.ListRunsOptions{
@@ -370,7 +564,7 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 	}
 
 	if workflowIDStr, ok := args["workflow_id"].(string); ok && workflowIDStr != "" {
-		if workflowID, _, err := s.client.ResolveWorkflowID(ctx, workflowIDStr); err == nil {
+		if workflowID, _, err := client.ResolveWorkflowID(ctx, workflowIDStr); err == nil {
 			opts.WorkflowID = &workflowID
 		}
 	}
@@ -410,11 +604,11 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 		format = f
 	}
 
-	s.log.Infof("Listing runs for %s/%s", s.config.RepoOwner, s.config.RepoName)
+	s.log.Infof("Listing runs for %s/%s", owner, repo)
 
-	runs, err := s.client.ListRepositoryWorkflowRunsWithOptions(ctx, opts)
+	runs, err := client.ListRepositoryWorkflowRunsWithOptions(ctx, opts)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to list workflow runs")), nil
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to list workflow runs", owner, repo)), nil
 	}
 
 	// Format output based on format parameter
@@ -435,19 +629,19 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 		result := make([]*github.WorkflowRunFull, 0, len(runs))
 		for _, r := range runs {
 			result = append(result, &github.WorkflowRunFull{
-				ID:          r.ID,
-				Name:        r.Name,
-				Status:      r.Status,
-				Conclusion:  r.Conclusion,
-				Branch:      r.Branch,
-				Event:       r.Event,
-				Actor:       r.Actor,
-				CreatedAt:   r.CreatedAt,
-				UpdatedAt:   r.UpdatedAt,
-				URL:         r.URL,
-				RunNumber:   r.RunNumber,
-				WorkflowID:  r.WorkflowID,
-				HeadSHA:     "",
+				ID:         r.ID,
+				Name:       r.Name,
+				Status:     r.Status,
+				Conclusion: r.Conclusion,
+				Branch:     r.Branch,
+				Event:      r.Event,
+				Actor:      r.Actor,
+				CreatedAt:  r.CreatedAt,
+				UpdatedAt:  r.UpdatedAt,
+				URL:        r.URL,
+				RunNumber:  r.RunNumber,
+				WorkflowID: r.WorkflowID,
+				HeadSHA:    "",
 			})
 		}
 		return jsonResult(result)
@@ -475,6 +669,10 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 
 func (s *MCPServer) getRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	runID, ok := extractRunID(args)
 	if !ok {
@@ -483,33 +681,37 @@ func (s *MCPServer) getRun(ctx context.Context, request mcp.CallToolRequest) (*m
 
 	element := "info"
 	if e, ok := args["element"].(string); ok {
-		element = e
+		element = strings.TrimSpace(strings.ToLower(e))
+	}
+
+	if !isValidRunElement(element) {
+		return errorResult(fmt.Sprintf("invalid element %q. Allowed values: %s", element, strings.Join(validRunElements, ", "))), nil
 	}
 
 	s.log.Infof("Getting run %d (element: %s)", runID, element)
 
 	switch element {
 	case "jobs":
-		return s.getRunJobs(ctx, runID, args)
+		return s.getRunJobs(ctx, client, owner, repo, runID, args)
 	case "logs":
-		return s.getRunLogs(ctx, runID, args)
+		return s.getRunLogs(ctx, client, owner, repo, runID, args)
 	case "log_files":
-		return s.getLogFiles(ctx, runID, args)
+		return s.getLogFiles(ctx, client, owner, repo, runID, args)
 	case "log_sections":
-		return s.getLogSections(ctx, runID, args)
+		return s.getLogSections(ctx, client, owner, repo, runID, args)
 	case "artifacts":
-		return s.getRunArtifacts(ctx, runID, args)
+		return s.getRunArtifacts(ctx, client, owner, repo, runID, args)
 	case "artifact_content":
-		return s.getArtifactContent(ctx, args)
+		return s.getArtifactContent(ctx, client, owner, repo, args)
 	default: // info
-		return s.getRunInfo(ctx, runID, args)
+		return s.getRunInfo(ctx, client, owner, repo, runID, args)
 	}
 }
 
-func (s *MCPServer) getRunInfo(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	run, err := s.client.GetWorkflowRun(ctx, runID)
+func (s *MCPServer) getRunInfo(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	run, err := client.GetWorkflowRun(ctx, runID)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("Run ID %d not found", runID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("Run ID %d not found", runID), owner, repo)), nil
 	}
 
 	format := s.getFormat()
@@ -520,19 +722,19 @@ func (s *MCPServer) getRunInfo(ctx context.Context, runID int64, args map[string
 	switch format {
 	case "full":
 		result := &github.WorkflowRunFull{
-			ID:          run.ID,
-			Name:        run.Name,
-			Status:      run.Status,
-			Conclusion:  run.Conclusion,
-			Branch:      run.Branch,
-			Event:       run.Event,
-			Actor:       run.Actor,
-			CreatedAt:   run.CreatedAt,
-			UpdatedAt:   run.UpdatedAt,
-			URL:         run.URL,
-			RunNumber:   run.RunNumber,
-			WorkflowID:  run.WorkflowID,
-			HeadSHA:     "",
+			ID:         run.ID,
+			Name:       run.Name,
+			Status:     run.Status,
+			Conclusion: run.Conclusion,
+			Branch:     run.Branch,
+			Event:      run.Event,
+			Actor:      run.Actor,
+			CreatedAt:  run.CreatedAt,
+			UpdatedAt:  run.UpdatedAt,
+			URL:        run.URL,
+			RunNumber:  run.RunNumber,
+			WorkflowID: run.WorkflowID,
+			HeadSHA:    "",
 		}
 		return jsonResult(result)
 	default: // compact
@@ -554,7 +756,7 @@ func (s *MCPServer) getRunInfo(ctx context.Context, runID int64, args map[string
 	}
 }
 
-func (s *MCPServer) getRunJobs(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *MCPServer) getRunJobs(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	filter := ""
 	if f, ok := args["filter"].(string); ok {
 		filter = f
@@ -565,9 +767,9 @@ func (s *MCPServer) getRunJobs(ctx context.Context, runID int64, args map[string
 		attemptNumber = int(an)
 	}
 
-	jobs, err := s.client.GetWorkflowJobs(ctx, runID, filter, attemptNumber)
+	jobs, err := client.GetWorkflowJobs(ctx, runID, filter, attemptNumber)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get jobs for run %d", runID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get jobs for run %d", runID), owner, repo)), nil
 	}
 
 	format := s.getFormat()
@@ -581,11 +783,11 @@ func (s *MCPServer) getRunJobs(ctx context.Context, runID int64, args map[string
 	return jsonResult(jobs)
 }
 
-func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *MCPServer) getRunLogs(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	// Check if getting logs for a specific job
 	if jobIDFloat, ok := args["job_id"].(float64); ok {
 		jobID := int64(jobIDFloat)
-		return s.getJobLogs(ctx, jobID, args)
+		return s.getJobLogs(ctx, client, owner, repo, jobID, args)
 	}
 
 	// Get workflow run logs
@@ -656,20 +858,20 @@ func (s *MCPServer) getRunLogs(ctx context.Context, runID int64, args map[string
 
 	if section != "" {
 		// Extract specific section
-		logs, err = s.client.GetLogSection(ctx, runID, 0, section, filterOpts)
+		logs, err = client.GetLogSection(ctx, runID, 0, section, filterOpts)
 	} else {
 		// Get all logs with optional filtering
-		logs, err = s.client.GetWorkflowLogsWithPattern(ctx, runID, head, tail, offset, noHeaders, filePattern, filterOpts)
+		logs, err = client.GetWorkflowLogsWithPattern(ctx, runID, head, tail, offset, noHeaders, filePattern, filterOpts)
 	}
 
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for run %d", runID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for run %d", runID), owner, repo)), nil
 	}
 
 	return textResult(logs), nil
 }
 
-func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *MCPServer) getJobLogs(ctx context.Context, client *github.Client, owner, repo string, jobID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	head := 0
 	if h, ok := args["head"].(float64); ok && h > 0 {
 		head = int(h)
@@ -732,23 +934,23 @@ func (s *MCPServer) getJobLogs(ctx context.Context, jobID int64, args map[string
 	if section != "" {
 		// Extract specific section from job logs
 		// Note: GetLogSection with jobID > 0 fetches job-specific logs
-		logs, err = s.client.GetLogSection(ctx, 0, jobID, section, filterOpts)
+		logs, err = client.GetLogSection(ctx, 0, jobID, section, filterOpts)
 	} else {
 		// Get all job logs with optional filtering
-		logs, err = s.client.GetWorkflowJobLogs(ctx, jobID, head, tail, offset, noHeaders, filterOpts)
+		logs, err = client.GetWorkflowJobLogs(ctx, jobID, head, tail, offset, noHeaders, filterOpts)
 	}
 
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get logs for job %d", jobID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for job %d", jobID), owner, repo)), nil
 	}
 
 	return textResult(logs), nil
 }
 
-func (s *MCPServer) getRunArtifacts(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	artifacts, err := s.client.GetWorkflowRunArtifacts(ctx, runID)
+func (s *MCPServer) getRunArtifacts(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	artifacts, err := client.GetWorkflowRunArtifacts(ctx, runID)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get artifacts for run %d", runID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get artifacts for run %d", runID), owner, repo)), nil
 	}
 
 	format := s.getFormat()
@@ -762,7 +964,7 @@ func (s *MCPServer) getRunArtifacts(ctx context.Context, runID int64, args map[s
 	return jsonResult(artifacts)
 }
 
-func (s *MCPServer) getArtifactContent(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *MCPServer) getArtifactContent(ctx context.Context, client *github.Client, owner, repo string, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	artifactIDFloat, ok := args["artifact_id"].(float64)
 	if !ok {
 		return errorResult("artifact_id is required for element=artifact_content"), nil
@@ -781,18 +983,18 @@ func (s *MCPServer) getArtifactContent(ctx context.Context, args map[string]inte
 
 	s.log.Infof("Getting artifact content %d (pattern: %s, max_size: %d)", artifactID, filePattern, maxFileSize)
 
-	content, err := s.client.GetArtifactContent(ctx, artifactID, filePattern, maxFileSize)
+	content, err := client.GetArtifactContent(ctx, artifactID, filePattern, maxFileSize)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get artifact content %d", artifactID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get artifact content %d", artifactID), owner, repo)), nil
 	}
 
 	return jsonResultPretty(content)
 }
 
-func (s *MCPServer) getLogFiles(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
-	logFiles, err := s.client.GetWorkflowLogFiles(ctx, runID)
+func (s *MCPServer) getLogFiles(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	logFiles, err := client.GetWorkflowLogFiles(ctx, runID)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get log files for run %d", runID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get log files for run %d", runID), owner, repo)), nil
 	}
 
 	// Apply file pattern filter if specified
@@ -821,7 +1023,7 @@ func (s *MCPServer) getLogFiles(ctx context.Context, runID int64, args map[strin
 	return jsonResult(logFiles)
 }
 
-func (s *MCPServer) getLogSections(ctx context.Context, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (s *MCPServer) getLogSections(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
 	// Check if getting sections for a specific job
 	var jobID int64
 	if jobIDFloat, ok := args["job_id"].(float64); ok {
@@ -830,9 +1032,9 @@ func (s *MCPServer) getLogSections(ctx context.Context, runID int64, args map[st
 
 	s.log.Infof("Getting log sections for run %d (job_id: %d)", runID, jobID)
 
-	sections, err := s.client.ListLogSections(ctx, runID, jobID)
+	sections, err := client.ListLogSections(ctx, runID, jobID)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get log sections for run %d", runID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get log sections for run %d", runID), owner, repo)), nil
 	}
 
 	format := s.getFormat()
@@ -848,6 +1050,10 @@ func (s *MCPServer) getLogSections(ctx context.Context, runID int64, args map[st
 
 func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	ref := ""
 	if r, ok := args["ref"].(string); ok && r != "" {
@@ -871,20 +1077,26 @@ func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequ
 		opts.Status = status
 	}
 
-	if filter, ok := args["filter"].(string); ok && filter == "all" {
-		opts.Filter = "all"
-	} else {
-		opts.Filter = "latest"
+	filterMode := "latest"
+	if filter, ok := args["filter"].(string); ok && filter != "" {
+		filterMode = strings.TrimSpace(strings.ToLower(filter))
 	}
+	if filterMode != "latest" && filterMode != "all" {
+		return errorResult(fmt.Sprintf("invalid filter %q. Allowed values: latest, all", filterMode)), nil
+	}
+	opts.Filter = filterMode
 
 	format := "summary"
-	if f, ok := args["format"].(string); ok {
-		format = f
+	if f, ok := args["format"].(string); ok && f != "" {
+		format = strings.TrimSpace(strings.ToLower(f))
+	}
+	if format != "summary" && format != "compact" && format != "full" {
+		return errorResult(fmt.Sprintf("invalid format %q. Allowed values: summary, compact, full", format)), nil
 	}
 
-	status, err := s.client.GetCheckRunsForRef(ctx, ref, opts)
+	status, err := client.GetCheckRunsForRef(ctx, ref, opts)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to get check status")), nil
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to get check status", owner, repo)), nil
 	}
 
 	switch format {
@@ -893,22 +1105,16 @@ func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequ
 	case "compact":
 		return jsonResult(status)
 	default: // summary
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Check Status for %s\n", ref))
-		sb.WriteString(fmt.Sprintf("State: %s\n", status.State))
-		sb.WriteString(fmt.Sprintf("Total Checks: %d\n", status.TotalCount))
-		if len(status.ByConclusion) > 0 {
-			sb.WriteString("By Conclusion:\n")
-			for conclusion, count := range status.ByConclusion {
-				sb.WriteString(fmt.Sprintf("  %s: %d\n", conclusion, count))
-			}
-		}
-		return textResult(sb.String()), nil
+		return textResult(formatWorkflowStatusSummary(ref, status, filterMode)), nil
 	}
 }
 
 func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	runID, ok := extractRunID(args)
 	if !ok {
@@ -922,9 +1128,9 @@ func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest)
 
 	s.log.Infof("Waiting for run %d (timeout: %dm)", runID, timeoutMinutes)
 
-	result, err := s.client.WaitForRun(ctx, runID, timeoutMinutes)
+	result, err := client.WaitForRun(ctx, runID, timeoutMinutes)
 	if err != nil && !result.TimeoutReached {
-		return errorResult(s.formatAuthError(err, "failed to wait for run")), nil
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for run", owner, repo)), nil
 	}
 
 	return jsonResult(result)
@@ -932,6 +1138,10 @@ func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest)
 
 func (s *MCPServer) waitForCommitChecks(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	ref := ""
 	if r, ok := args["ref"].(string); ok && r != "" {
@@ -945,9 +1155,9 @@ func (s *MCPServer) waitForCommitChecks(ctx context.Context, request mcp.CallToo
 
 	s.log.Infof("Waiting for checks on ref %s (timeout: %dm)", ref, timeoutMinutes)
 
-	result, err := s.client.WaitForCommitChecks(ctx, ref, timeoutMinutes)
+	result, err := client.WaitForCommitChecks(ctx, ref, timeoutMinutes)
 	if err != nil && !result.TimeoutReached {
-		return errorResult(s.formatAuthError(err, "failed to wait for checks")), nil
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for checks", owner, repo)), nil
 	}
 
 	return jsonResult(result)
@@ -955,6 +1165,10 @@ func (s *MCPServer) waitForCommitChecks(ctx context.Context, request mcp.CallToo
 
 func (s *MCPServer) manageRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	runID, ok := extractRunID(args)
 	if !ok {
@@ -978,11 +1192,11 @@ func (s *MCPServer) manageRun(ctx context.Context, request mcp.CallToolRequest) 
 		return errorResult(fmt.Sprintf("unknown action: %s (must be cancel, rerun, or rerun_failed)", actionStr)), nil
 	}
 
-	s.log.Infof("Managing run %d: %s", runID, action)
+	s.log.Infof("Managing run %d on %s/%s: %s", runID, owner, repo, action)
 
-	result, err := s.client.ManageRun(ctx, runID, action)
+	result, err := client.ManageRun(ctx, runID, action)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, "failed to manage run")), nil
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to manage run", owner, repo)), nil
 	}
 
 	if result.Status == "success" {
@@ -993,6 +1207,10 @@ func (s *MCPServer) manageRun(ctx context.Context, request mcp.CallToolRequest) 
 
 func (s *MCPServer) getArtifact(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	artifactIDFloat, ok := args["artifact_id"].(float64)
 	if !ok {
@@ -1012,9 +1230,9 @@ func (s *MCPServer) getArtifact(ctx context.Context, request mcp.CallToolRequest
 
 	s.log.Infof("Getting artifact %d (pattern: %s, max_size: %d)", artifactID, filePattern, maxFileSize)
 
-	content, err := s.client.GetArtifactContent(ctx, artifactID, filePattern, maxFileSize)
+	content, err := client.GetArtifactContent(ctx, artifactID, filePattern, maxFileSize)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to get artifact %d", artifactID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get artifact %d", artifactID), owner, repo)), nil
 	}
 
 	return jsonResultPretty(content)
@@ -1022,6 +1240,10 @@ func (s *MCPServer) getArtifact(ctx context.Context, request mcp.CallToolRequest
 
 func (s *MCPServer) downloadArtifact(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 
 	artifactIDFloat, ok := args["artifact_id"].(float64)
 	if !ok {
@@ -1036,9 +1258,9 @@ func (s *MCPServer) downloadArtifact(ctx context.Context, request mcp.CallToolRe
 
 	s.log.Infof("Downloading artifact %d to %s", artifactID, outputPath)
 
-	result, err := s.client.DownloadArtifact(ctx, artifactID, outputPath)
+	result, err := client.DownloadArtifact(ctx, artifactID, outputPath)
 	if err != nil {
-		return errorResult(s.formatAuthError(err, fmt.Sprintf("failed to download artifact %d", artifactID))), nil
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to download artifact %d", artifactID), owner, repo)), nil
 	}
 
 	return jsonResultPretty(result)

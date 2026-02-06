@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
@@ -26,6 +28,63 @@ func TestNewMCPServer(t *testing.T) {
 	assert.NotNil(t, server.srv)
 	assert.NotNil(t, server.client)
 	assert.NotNil(t, server.config)
+}
+
+func TestFormatAuthError_PermissionHints(t *testing.T) {
+	server := &MCPServer{
+		config: &config.Config{
+			RepoOwner: "example-owner",
+			RepoName:  "example-repo",
+		},
+	}
+
+	tests := []struct {
+		name     string
+		msg      string
+		err      error
+		contains []string
+	}{
+		{
+			name: "403 PAT limitation",
+			msg:  "failed to get check status",
+			err:  errors.New("GET https://api.github.com/repos/example-owner/example-repo/commits/abc/check-runs: 403 Resource not accessible by personal access token []"),
+			contains: []string{
+				"GitHub rejected the token for this endpoint",
+				"Actions: Read",
+				"'repo' scope",
+			},
+		},
+		{
+			name: "401 unauthorized logs",
+			msg:  "failed to get logs for run 123",
+			err:  errors.New("failed to get workflow logs: HTTP 401 (log access unauthorized)"),
+			contains: []string{
+				"GitHub rejected authentication",
+				"example-owner/example-repo",
+				"read Actions data",
+			},
+		},
+		{
+			name: "404 not found or hidden",
+			msg:  "failed to get logs for run 456",
+			err:  errors.New("failed to get workflow log URL for run 456: unexpected status code: 404 Not Found"),
+			contains: []string{
+				"GitHub returned 404",
+				"not in this repository",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := server.formatAuthError(tc.err, tc.msg)
+			for _, c := range tc.contains {
+				assert.Contains(t, out, c)
+			}
+			// Ensure test data stays sanitized.
+			assert.False(t, strings.Contains(strings.ToLower(out), "example-secret-repo"))
+		})
+	}
 }
 
 func TestWorkflowRunJSON(t *testing.T) {
@@ -144,3 +203,58 @@ func TestWorkflowIDParsing(t *testing.T) {
 	}
 }
 
+func TestIsValidRunElement(t *testing.T) {
+	assert.True(t, isValidRunElement("info"))
+	assert.True(t, isValidRunElement("logs"))
+	assert.True(t, isValidRunElement("artifact_content"))
+	assert.False(t, isValidRunElement("log"))
+	assert.False(t, isValidRunElement("unknown"))
+}
+
+func TestFormatWorkflowStatusSummary(t *testing.T) {
+	status := &github.CombinedCheckStatus{
+		State:      "failure",
+		TotalCount: 3,
+		ByConclusion: map[string]int{
+			"failure":     2,
+			"in_progress": 1,
+		},
+		CheckRuns: []*github.CheckRun{
+			{ID: 10, Name: "Build", Status: "completed", Conclusion: "failure"},
+			{ID: 11, Name: "Lint", Status: "in_progress", Conclusion: ""},
+		},
+	}
+
+	out := formatWorkflowStatusSummary("main", status, "latest")
+	assert.Contains(t, out, "Workflow Status for main")
+	assert.Contains(t, out, "Overall: failure")
+	assert.Contains(t, out, "Workflows: 3")
+	assert.Contains(t, out, "Filter Mode: latest")
+	assert.Contains(t, out, "By Conclusion:")
+	assert.Contains(t, out, "failure: 2")
+	assert.Contains(t, out, "in_progress: 1")
+	assert.Contains(t, out, "- Build: completed/failure (id: 10)")
+	assert.Contains(t, out, "- Lint: in_progress/- (id: 11)")
+}
+
+func TestRepoFromArgs(t *testing.T) {
+	server := &MCPServer{
+		config: &config.Config{
+			RepoOwner: "default-owner",
+			RepoName:  "default-repo",
+		},
+	}
+
+	owner, repo, err := server.repoFromArgs(map[string]interface{}{})
+	require.NoError(t, err)
+	assert.Equal(t, "default-owner", owner)
+	assert.Equal(t, "default-repo", repo)
+
+	owner, repo, err = server.repoFromArgs(map[string]interface{}{
+		"owner": "override-owner",
+		"repo":  "override-repo",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "override-owner", owner)
+	assert.Equal(t, "override-repo", repo)
+}
