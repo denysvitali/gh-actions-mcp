@@ -139,13 +139,6 @@ func (s *MCPServer) getLimit() int {
 	return DefaultListLimit
 }
 
-// getLogLimit returns the log limit from config or default
-func (s *MCPServer) getLogLimit() int {
-	if s.config.DefaultLogLen > 0 {
-		return s.config.DefaultLogLen
-	}
-	return DefaultLogLines
-}
 
 func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string {
 	errStr := ""

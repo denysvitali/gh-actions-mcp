@@ -58,17 +58,6 @@ func IsHTTPError(err error, statusCode int) bool {
 	return false
 }
 
-// newHTTPError creates an HTTPError from a response and error
-func newHTTPError(resp *http.Response, msg string) error {
-	statusCode := 0
-	if resp != nil {
-		statusCode = resp.StatusCode
-	}
-	return &HTTPError{
-		StatusCode: statusCode,
-		Message:    fmt.Sprintf("%s: HTTP %d", msg, statusCode),
-	}
-}
 
 // newHTTPErrorFromGitHub creates an HTTPError from a github.Response
 func newHTTPErrorFromGitHub(resp *github.Response, msg string) error {
@@ -1582,7 +1571,9 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 	}
 
 	// Count files in the archive
-	outFile.Seek(0, 0)
+	if _, err := outFile.Seek(0, 0); err != nil {
+		return nil, fmt.Errorf("failed to seek artifact file: %w", err)
+	}
 	zipReader, err := zip.NewReader(outFile, bytesWritten)
 	if err != nil {
 		return &ArtifactDownloadResult{
