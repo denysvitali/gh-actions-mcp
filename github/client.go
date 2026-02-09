@@ -1421,8 +1421,13 @@ func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, fileP
 		}
 	}
 
-	// Fetch the ZIP file
-	zipResp, err := c.gh.Client().Get(zipURL.String())
+	// Fetch the ZIP from the pre-signed URL without auth headers.
+	// Storage backends reject Authorization headers on pre-signed URLs.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zipURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build artifact request: %w", err)
+	}
+	zipResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch artifact: %w", err)
 	}
@@ -1547,8 +1552,13 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 		}
 	}
 
-	// Fetch the ZIP file
-	zipResp, err := c.gh.Client().Get(zipURL.String())
+	// Fetch the ZIP from the pre-signed URL without auth headers.
+	// Storage backends reject Authorization headers on pre-signed URLs.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, zipURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build artifact request: %w", err)
+	}
+	zipResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch artifact: %w", err)
 	}
