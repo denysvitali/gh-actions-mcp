@@ -4,15 +4,20 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	githubapi "github.com/google/go-github/v69/github"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInferRepoFromOrigin_HTTPS(t *testing.T) {
@@ -1123,4 +1128,220 @@ func TestGetCheckRunsForRef_UsesWorkflowRunsNotChecksAPI(t *testing.T) {
 	assert.Equal(t, "pending", status.State)
 	assert.Equal(t, 1, status.ByConclusion["failure"])
 	assert.Equal(t, 1, status.ByConclusion["in_progress"])
+}
+
+// makeArtifactZIP creates an in-memory ZIP archive with the given files.
+func makeArtifactZIP(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range files {
+		f, err := zw.Create(name)
+		require.NoError(t, err)
+		_, err = io.WriteString(f, content)
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+// artifactJSON returns a JSON body matching the go-github Artifact model.
+func artifactJSON(id int64, name string, size int64) []byte {
+	m := map[string]interface{}{
+		"id":                   id,
+		"name":                 name,
+		"size_in_bytes":        size,
+		"archive_download_url": "",
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
+// setupArtifactServer creates an httptest server that handles the GetArtifact
+// and DownloadArtifact GitHub API endpoints plus a pre-signed blob endpoint
+// that rejects requests carrying an Authorization header.
+func setupArtifactServer(t *testing.T, owner, repo string, artifactID int64, artifactName string, zipData []byte) (*httptest.Server, *Client) {
+	t.Helper()
+
+	if log == nil {
+		SetLogger(logrus.New())
+	}
+
+	mux := http.NewServeMux()
+	redirectBase := ""
+
+	// GET /repos/{owner}/{repo}/actions/artifacts/{id} — metadata
+	mux.HandleFunc(
+		"/repos/"+owner+"/"+repo+"/actions/artifacts/123",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(artifactJSON(artifactID, artifactName, int64(len(zipData))))
+		},
+	)
+
+	// GET /repos/{owner}/{repo}/actions/artifacts/{id}/zip — redirect to blob
+	mux.HandleFunc(
+		"/repos/"+owner+"/"+repo+"/actions/artifacts/123/zip",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", redirectBase+"/blob/artifact.zip")
+			w.WriteHeader(http.StatusFound)
+		},
+	)
+
+	// GET /blob/artifact.zip — pre-signed URL: must NOT carry Authorization
+	mux.HandleFunc("/blob/artifact.zip", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("InvalidAuthenticationInfo"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipData)
+	})
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	redirectBase = ts.URL
+
+	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
+	baseURL, err := url.Parse(ts.URL + "/")
+	require.NoError(t, err)
+	ghc.BaseURL = baseURL
+
+	client := &Client{
+		owner:        owner,
+		repo:         repo,
+		gh:           ghc,
+		perPageLimit: 50,
+	}
+	return ts, client
+}
+
+func TestGetArtifactContent_WithoutAuthHeader(t *testing.T) {
+	const (
+		owner = "test-owner"
+		repo  = "test-repo"
+	)
+
+	zipData := makeArtifactZIP(t, map[string]string{
+		"hello.txt":  "hello world\n",
+		"sub/app.go": "package main\n",
+	})
+
+	_, client := setupArtifactServer(t, owner, repo, 123, "my-artifact", zipData)
+
+	content, err := client.GetArtifactContent(context.Background(), 123, "", 0)
+	require.NoError(t, err)
+
+	assert.Equal(t, "my-artifact", content.Name)
+	assert.Equal(t, int64(123), content.ID)
+	assert.Equal(t, 2, content.FileCount)
+
+	// Files are sorted by path
+	require.Len(t, content.Files, 2)
+	assert.Equal(t, "hello.txt", content.Files[0].Path)
+	assert.Equal(t, "hello world\n", content.Files[0].Content)
+	assert.Equal(t, "text", content.Files[0].Encoding)
+	assert.Equal(t, "sub/app.go", content.Files[1].Path)
+	assert.Equal(t, "package main\n", content.Files[1].Content)
+}
+
+func TestGetArtifactContent_FilePattern(t *testing.T) {
+	const (
+		owner = "test-owner"
+		repo  = "test-repo"
+	)
+
+	zipData := makeArtifactZIP(t, map[string]string{
+		"result.txt": "ok",
+		"result.json": `{"status":"ok"}`,
+	})
+
+	_, client := setupArtifactServer(t, owner, repo, 123, "results", zipData)
+
+	content, err := client.GetArtifactContent(context.Background(), 123, "*.json", 0)
+	require.NoError(t, err)
+
+	require.Len(t, content.Files, 1)
+	assert.Equal(t, "result.json", content.Files[0].Path)
+}
+
+func TestGetArtifactContent_MaxFileSize(t *testing.T) {
+	const (
+		owner = "test-owner"
+		repo  = "test-repo"
+	)
+
+	zipData := makeArtifactZIP(t, map[string]string{
+		"small.txt": "hi",
+		"large.txt": strings.Repeat("x", 1000),
+	})
+
+	_, client := setupArtifactServer(t, owner, repo, 123, "sized", zipData)
+
+	content, err := client.GetArtifactContent(context.Background(), 123, "", 500)
+	require.NoError(t, err)
+
+	require.Len(t, content.Files, 2)
+	// Files are sorted by path: large.txt before small.txt
+	assert.Equal(t, "large.txt", content.Files[0].Path)
+	assert.Contains(t, content.Files[0].Content, "file too large")
+	assert.Equal(t, "small.txt", content.Files[1].Path)
+	assert.Equal(t, "hi", content.Files[1].Content)
+}
+
+func TestDownloadArtifact_WithoutAuthHeader(t *testing.T) {
+	const (
+		owner = "test-owner"
+		repo  = "test-repo"
+	)
+
+	zipData := makeArtifactZIP(t, map[string]string{
+		"data.csv": "a,b,c\n1,2,3\n",
+	})
+
+	_, client := setupArtifactServer(t, owner, repo, 123, "csv-export", zipData)
+
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "artifact.zip")
+
+	result, err := client.DownloadArtifact(context.Background(), 123, outPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "csv-export", result.Name)
+	assert.Equal(t, int64(123), result.ID)
+	assert.Equal(t, outPath, result.SavedPath)
+	assert.Equal(t, 1, result.FileCount)
+	assert.Equal(t, int64(len(zipData)), result.TotalSize)
+
+	// Verify the file on disk is a valid ZIP with the expected content
+	saved, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, zipData, saved)
+}
+
+func TestDownloadArtifact_DefaultOutputPath(t *testing.T) {
+	const (
+		owner = "test-owner"
+		repo  = "test-repo"
+	)
+
+	zipData := makeArtifactZIP(t, map[string]string{"f.txt": "x"})
+
+	_, client := setupArtifactServer(t, owner, repo, 123, "my-artifact", zipData)
+
+	// Use empty outputPath — function should derive "my-artifact.zip"
+	// Run in a temp dir so we don't pollute the repo.
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	result, err := client.DownloadArtifact(context.Background(), 123, "")
+	require.NoError(t, err)
+
+	assert.Equal(t, "my-artifact.zip", result.SavedPath)
+	_, err = os.Stat(filepath.Join(tmpDir, "my-artifact.zip"))
+	assert.NoError(t, err)
 }
