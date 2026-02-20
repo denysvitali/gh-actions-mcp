@@ -117,19 +117,21 @@ func NewClientWithPerPage(token, owner, repo string, perPageLimit int) *Client {
 }
 
 type WorkflowRun struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	Branch     string `json:"branch"`
-	HeadSHA    string `json:"head_sha,omitempty"`
-	Event      string `json:"event"`
-	Actor      string `json:"actor"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
-	URL        string `json:"url"`
-	RunNumber  int    `json:"run_number"`
-	WorkflowID int64  `json:"workflow_id"`
+	ID              int64   `json:"id"`
+	Name            string  `json:"name"`
+	Status          string  `json:"status"`
+	Conclusion      string  `json:"conclusion"`
+	Branch          string  `json:"branch"`
+	HeadSHA         string  `json:"head_sha,omitempty"`
+	Event           string  `json:"event"`
+	Actor           string  `json:"actor"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	StartedAt       string  `json:"started_at,omitempty"`
+	URL             string  `json:"url"`
+	RunNumber       int     `json:"run_number"`
+	WorkflowID      int64   `json:"workflow_id"`
+	DurationSeconds float64 `json:"duration,omitempty"`
 }
 
 type Workflow struct {
@@ -141,54 +143,69 @@ type Workflow struct {
 
 // WorkflowRunMinimal is a compact workflow run representation for reduced token usage
 type WorkflowRunMinimal struct {
-	ID         int64  `json:"i"`
-	Name       string `json:"n"`
-	Status     string `json:"s"`
-	Conclusion string `json:"c,omitempty"`
-	CreatedAt  string `json:"t"`
+	ID              int64   `json:"id"`
+	Name            string  `json:"name"`
+	Status          string  `json:"status"`
+	Conclusion      string  `json:"conclusion,omitempty"`
+	CreatedAt       string  `json:"created_at"`
+	DurationSeconds float64 `json:"duration,omitempty"`
 }
 
 // WorkflowRunCompact extends Minimal with additional fields
 type WorkflowRunCompact struct {
 	WorkflowRunMinimal
-	Branch string `json:"b,omitempty"`
-	SHA    string `json:"h,omitempty"`
-	Event  string `json:"e,omitempty"`
-	Actor  string `json:"a,omitempty"`
-	URL    string `json:"u,omitempty"`
+	Branch string `json:"branch,omitempty"`
+	SHA    string `json:"sha,omitempty"`
+	Event  string `json:"event,omitempty"`
+	Actor  string `json:"actor,omitempty"`
+	URL    string `json:"url,omitempty"`
 }
 
 // WorkflowRunFull is the complete workflow run representation
 type WorkflowRunFull struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Conclusion  string `json:"conclusion"`
-	Branch      string `json:"branch"`
-	Event       string `json:"event"`
-	Actor       string `json:"actor"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-	URL         string `json:"url"`
-	RunNumber   int    `json:"run_number"`
-	WorkflowID  int64  `json:"workflow_id"`
-	HeadSHA     string `json:"head_sha"`
-	StartedAt   string `json:"started_at,omitempty"`
-	CompletedAt string `json:"completed_at,omitempty"`
+	ID              int64   `json:"id"`
+	Name            string  `json:"name"`
+	Status          string  `json:"status"`
+	Conclusion      string  `json:"conclusion"`
+	Branch          string  `json:"branch"`
+	Event           string  `json:"event"`
+	Actor           string  `json:"actor"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	URL             string  `json:"url"`
+	RunNumber       int     `json:"run_number"`
+	WorkflowID      int64   `json:"workflow_id"`
+	HeadSHA         string  `json:"head_sha"`
+	StartedAt       string  `json:"started_at,omitempty"`
+	CompletedAt     string  `json:"completed_at,omitempty"`
+	DurationSeconds float64 `json:"duration,omitempty"`
+}
+
+// Step represents a single step within a workflow job
+type Step struct {
+	Name            string  `json:"name"`
+	Number          int64   `json:"number"`
+	Status          string  `json:"status"`
+	Conclusion      string  `json:"conclusion,omitempty"`
+	StartedAt       string  `json:"started_at,omitempty"`
+	CompletedAt     string  `json:"completed_at,omitempty"`
+	DurationSeconds float64 `json:"duration,omitempty"`
 }
 
 // Job represents a workflow run job
 type Job struct {
-	ID            int64    `json:"id"`
-	Name          string   `json:"name"`
-	Status        string   `json:"status"`
-	Conclusion    string   `json:"conclusion,omitempty"`
-	StartedAt     string   `json:"started_at,omitempty"`
-	CompletedAt   string   `json:"completed_at,omitempty"`
-	RunnerName    string   `json:"runner_name,omitempty"`
-	RunnerGroup   string   `json:"runner_group,omitempty"`
-	Labels        []string `json:"labels,omitempty"`
-	WorkflowRunID int64    `json:"workflow_run_id"`
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	Status          string   `json:"status"`
+	Conclusion      string   `json:"conclusion,omitempty"`
+	StartedAt       string   `json:"started_at,omitempty"`
+	CompletedAt     string   `json:"completed_at,omitempty"`
+	DurationSeconds float64  `json:"duration_seconds,omitempty"`
+	RunnerName      string   `json:"runner_name,omitempty"`
+	RunnerGroup     string   `json:"runner_group,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
+	WorkflowRunID   int64    `json:"workflow_run_id"`
+	Steps           []*Step  `json:"steps,omitempty"`
 }
 
 // Artifact represents a workflow run artifact
@@ -258,7 +275,7 @@ type CombinedCheckStatus struct {
 type WaitRunResult struct {
 	Status          string  `json:"status"`               // "completed", "timed_out"
 	Conclusion      string  `json:"conclusion,omitempty"` // "success", "failure", etc.
-	DurationSeconds float64 `json:"duration_seconds"`
+	DurationSeconds float64 `json:"duration"`
 	RunURL          string  `json:"run_url"`
 	StartedAt       string  `json:"started_at,omitempty"`
 	CompletedAt     string  `json:"completed_at,omitempty"`
@@ -313,20 +330,23 @@ type GetCheckRunsOptions struct {
 
 // workflowRunFromGitHub converts a github.WorkflowRun to our WorkflowRun type
 func workflowRunFromGitHub(run *github.WorkflowRun) *WorkflowRun {
+	updatedAt := run.GetUpdatedAt()
 	return &WorkflowRun{
-		ID:         run.GetID(),
-		Name:       run.GetName(),
-		Status:     run.GetStatus(),
-		Conclusion: run.GetConclusion(),
-		Branch:     run.GetHeadBranch(),
-		HeadSHA:    run.GetHeadSHA(),
-		Event:      run.GetEvent(),
-		Actor:      run.GetActor().GetLogin(),
-		CreatedAt:  run.GetCreatedAt().String(),
-		UpdatedAt:  run.GetUpdatedAt().String(),
-		URL:        run.GetHTMLURL(),
-		RunNumber:  run.GetRunNumber(),
-		WorkflowID: run.GetWorkflowID(),
+		ID:              run.GetID(),
+		Name:            run.GetName(),
+		Status:          run.GetStatus(),
+		Conclusion:      run.GetConclusion(),
+		Branch:          run.GetHeadBranch(),
+		HeadSHA:         run.GetHeadSHA(),
+		Event:           run.GetEvent(),
+		Actor:           run.GetActor().GetLogin(),
+		CreatedAt:       run.GetCreatedAt().String(),
+		UpdatedAt:       updatedAt.String(),
+		StartedAt:       formatTime(run.RunStartedAt),
+		URL:             run.GetHTMLURL(),
+		RunNumber:       run.GetRunNumber(),
+		WorkflowID:      run.GetWorkflowID(),
+		DurationSeconds: durationSeconds(run.RunStartedAt, &updatedAt),
 	}
 }
 
@@ -1204,17 +1224,32 @@ func (c *Client) GetWorkflowJobs(ctx context.Context, runID int64, filter string
 			labels = job.Labels
 		}
 
+		steps := make([]*Step, 0, len(job.Steps))
+		for _, s := range job.Steps {
+			steps = append(steps, &Step{
+				Name:            s.GetName(),
+				Number:          s.GetNumber(),
+				Status:          s.GetStatus(),
+				Conclusion:      s.GetConclusion(),
+				StartedAt:       formatTime(s.StartedAt),
+				CompletedAt:     formatTime(s.CompletedAt),
+				DurationSeconds: durationSeconds(s.StartedAt, s.CompletedAt),
+			})
+		}
+
 		result = append(result, &Job{
-			ID:            job.GetID(),
-			Name:          job.GetName(),
-			Status:        job.GetStatus(),
-			Conclusion:    job.GetConclusion(),
-			StartedAt:     formatTime(job.StartedAt),
-			CompletedAt:   formatTime(job.CompletedAt),
-			RunnerName:    job.GetRunnerName(),
-			RunnerGroup:   job.GetRunnerGroupName(),
-			Labels:        labels,
-			WorkflowRunID: job.GetRunID(),
+			ID:              job.GetID(),
+			Name:            job.GetName(),
+			Status:          job.GetStatus(),
+			Conclusion:      job.GetConclusion(),
+			StartedAt:       formatTime(job.StartedAt),
+			CompletedAt:     formatTime(job.CompletedAt),
+			DurationSeconds: durationSeconds(job.StartedAt, job.CompletedAt),
+			RunnerName:      job.GetRunnerName(),
+			RunnerGroup:     job.GetRunnerGroupName(),
+			Labels:          labels,
+			WorkflowRunID:   job.GetRunID(),
+			Steps:           steps,
 		})
 	}
 
@@ -2035,6 +2070,19 @@ func formatTime(t *github.Timestamp) string {
 		return ""
 	}
 	return t.String()
+}
+
+// durationSeconds returns the elapsed seconds between two timestamps.
+// Returns 0 if either timestamp is nil or the duration is negative.
+func durationSeconds(start, end *github.Timestamp) float64 {
+	if start == nil || end == nil {
+		return 0
+	}
+	d := end.Time.Sub(start.Time).Seconds()
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // formatTimeValue formats a github.Timestamp value into an ISO string
