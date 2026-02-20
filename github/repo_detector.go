@@ -17,16 +17,11 @@ const (
 	DefaultRemoteName = "origin"
 )
 
-var (
-	detectorLog *logrus.Logger
-	once        sync.Once
-)
+var detectorLog = logrus.New()
 
-// SetLogger sets the logger for the repo detector
+// SetDetectorLogger sets the logger for the repo detector
 func SetDetectorLogger(l *logrus.Logger) {
-	once.Do(func() {
-		detectorLog = l
-	})
+	detectorLog = l
 }
 
 // RepoInfo contains information about a repository
@@ -400,6 +395,16 @@ func SetRemoteURL(remoteName, newURL string) error {
 		cfg.URLs = []string{newURL}
 	} else {
 		cfg.URLs[0] = newURL
+	}
+
+	// Persist the updated config back to the repository
+	repoConfig, err := repo.Config()
+	if err != nil {
+		return fmt.Errorf("failed to get repo config: %w", err)
+	}
+	repoConfig.Remotes[remoteName] = cfg
+	if err := repo.SetConfig(repoConfig); err != nil {
+		return fmt.Errorf("failed to save remote config: %w", err)
 	}
 
 	return nil

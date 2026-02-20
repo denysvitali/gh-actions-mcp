@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
@@ -115,8 +116,7 @@ var inferCmd = &cobra.Command{
 			return fmt.Errorf("failed to get git remote: %v (are you in a git repo with an 'origin' remote?)", err)
 		}
 
-		remoteURL := string(output)
-		remoteURL = remoteURL[:len(remoteURL)-1] // Remove trailing newline
+		remoteURL := strings.TrimRight(string(output), "\n\r")
 
 		owner, repo, err := github.InferRepoFromOrigin(remoteURL)
 		if err != nil {
@@ -179,8 +179,7 @@ func inferRepoFromGit(cfg *config.Config) error {
 		return fmt.Errorf("git command failed: %w", err)
 	}
 
-	remoteURL := string(output)
-	remoteURL = remoteURL[:len(remoteURL)-1]
+	remoteURL := strings.TrimRight(string(output), "\n\r")
 
 	owner, repo, err := github.InferRepoFromOrigin(remoteURL)
 	if err != nil {
