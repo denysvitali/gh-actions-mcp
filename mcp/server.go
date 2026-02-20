@@ -621,11 +621,12 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 		result := make([]*github.WorkflowRunMinimal, 0, len(runs))
 		for _, r := range runs {
 			result = append(result, &github.WorkflowRunMinimal{
-				ID:         r.ID,
-				Name:       r.Name,
-				Status:     r.Status,
-				Conclusion: r.Conclusion,
-				CreatedAt:  r.CreatedAt,
+				ID:              r.ID,
+				Name:            r.Name,
+				Status:          r.Status,
+				Conclusion:      r.Conclusion,
+				CreatedAt:       r.CreatedAt,
+				DurationSeconds: r.DurationSeconds,
 			})
 		}
 		return jsonResult(result)
@@ -633,19 +634,22 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 		result := make([]*github.WorkflowRunFull, 0, len(runs))
 		for _, r := range runs {
 			result = append(result, &github.WorkflowRunFull{
-				ID:         r.ID,
-				Name:       r.Name,
-				Status:     r.Status,
-				Conclusion: r.Conclusion,
-				Branch:     r.Branch,
-				Event:      r.Event,
-				Actor:      r.Actor,
-				CreatedAt:  r.CreatedAt,
-				UpdatedAt:  r.UpdatedAt,
-				URL:        r.URL,
-				RunNumber:  r.RunNumber,
-				WorkflowID: r.WorkflowID,
-				HeadSHA:    r.HeadSHA,
+				ID:              r.ID,
+				Name:            r.Name,
+				Status:          r.Status,
+				Conclusion:      r.Conclusion,
+				Branch:          r.Branch,
+				Event:           r.Event,
+				Actor:           r.Actor,
+				CreatedAt:       r.CreatedAt,
+				UpdatedAt:       r.UpdatedAt,
+				URL:             r.URL,
+				RunNumber:       r.RunNumber,
+				WorkflowID:      r.WorkflowID,
+				HeadSHA:         r.HeadSHA,
+				StartedAt:       r.StartedAt,
+				CompletedAt:     r.UpdatedAt,
+				DurationSeconds: r.DurationSeconds,
 			})
 		}
 		return jsonResult(result)
@@ -654,11 +658,12 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 		for _, r := range runs {
 			result = append(result, &github.WorkflowRunCompact{
 				WorkflowRunMinimal: github.WorkflowRunMinimal{
-					ID:         r.ID,
-					Name:       r.Name,
-					Status:     r.Status,
-					Conclusion: r.Conclusion,
-					CreatedAt:  r.CreatedAt,
+					ID:              r.ID,
+					Name:            r.Name,
+					Status:          r.Status,
+					Conclusion:      r.Conclusion,
+					CreatedAt:       r.CreatedAt,
+					DurationSeconds: r.DurationSeconds,
 				},
 				Branch: r.Branch,
 				SHA:    r.HeadSHA,
@@ -726,29 +731,33 @@ func (s *MCPServer) getRunInfo(ctx context.Context, client *github.Client, owner
 	switch format {
 	case "full":
 		result := &github.WorkflowRunFull{
-			ID:         run.ID,
-			Name:       run.Name,
-			Status:     run.Status,
-			Conclusion: run.Conclusion,
-			Branch:     run.Branch,
-			Event:      run.Event,
-			Actor:      run.Actor,
-			CreatedAt:  run.CreatedAt,
-			UpdatedAt:  run.UpdatedAt,
-			URL:        run.URL,
-			RunNumber:  run.RunNumber,
-			WorkflowID: run.WorkflowID,
-			HeadSHA:    run.HeadSHA,
+			ID:              run.ID,
+			Name:            run.Name,
+			Status:          run.Status,
+			Conclusion:      run.Conclusion,
+			Branch:          run.Branch,
+			Event:           run.Event,
+			Actor:           run.Actor,
+			CreatedAt:       run.CreatedAt,
+			UpdatedAt:       run.UpdatedAt,
+			URL:             run.URL,
+			RunNumber:       run.RunNumber,
+			WorkflowID:      run.WorkflowID,
+			HeadSHA:         run.HeadSHA,
+			StartedAt:       run.StartedAt,
+			CompletedAt:     run.UpdatedAt,
+			DurationSeconds: run.DurationSeconds,
 		}
 		return jsonResult(result)
 	default: // compact
 		result := &github.WorkflowRunCompact{
 			WorkflowRunMinimal: github.WorkflowRunMinimal{
-				ID:         run.ID,
-				Name:       run.Name,
-				Status:     run.Status,
-				Conclusion: run.Conclusion,
-				CreatedAt:  run.CreatedAt,
+				ID:              run.ID,
+				Name:            run.Name,
+				Status:          run.Status,
+				Conclusion:      run.Conclusion,
+				CreatedAt:       run.CreatedAt,
+				DurationSeconds: run.DurationSeconds,
 			},
 			Branch: run.Branch,
 			SHA:    run.HeadSHA,
