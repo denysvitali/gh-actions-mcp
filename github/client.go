@@ -22,7 +22,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var log *logrus.Logger
+var log = logrus.New()
 
 func SetLogger(l *logrus.Logger) {
 	log = l
@@ -77,11 +77,17 @@ const logSizeThreshold = 10 * 1024 * 1024 // 10MB
 // maxLogFileSize is the maximum size for individual log files we'll read
 const maxLogFileSize = 50 * 1024 * 1024 // 50MB per file
 
+// maxRedirects is the maximum number of HTTP redirects to follow
+const maxRedirects = 10
+
 // regexCache caches compiled regex patterns
 var (
 	regexCache      = make(map[string]*regexp.Regexp)
 	regexCacheMutex sync.RWMutex
 )
+
+// presignedHTTPClient is used for fetching pre-signed storage URLs (no auth headers)
+var presignedHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 type Client struct {
 	owner        string
@@ -99,7 +105,7 @@ func NewClientWithPerPage(token, owner, repo string, perPageLimit int) *Client {
 	if perPageLimit <= 0 {
 		perPageLimit = 50 // sensible default
 	}
-	hc := &http.Client{}
+	hc := &http.Client{Timeout: 30 * time.Second}
 	gh := github.NewClient(hc)
 	gh = gh.WithAuthToken(token)
 	return &Client{
@@ -116,6 +122,7 @@ type WorkflowRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	Branch     string `json:"branch"`
+	HeadSHA    string `json:"head_sha,omitempty"`
 	Event      string `json:"event"`
 	Actor      string `json:"actor"`
 	CreatedAt  string `json:"created_at"`
@@ -312,6 +319,7 @@ func workflowRunFromGitHub(run *github.WorkflowRun) *WorkflowRun {
 		Status:     run.GetStatus(),
 		Conclusion: run.GetConclusion(),
 		Branch:     run.GetHeadBranch(),
+		HeadSHA:    run.GetHeadSHA(),
 		Event:      run.GetEvent(),
 		Actor:      run.GetActor().GetLogin(),
 		CreatedAt:  run.GetCreatedAt().String(),
@@ -726,7 +734,8 @@ func readZipArchive(zipURL string, httpClient *http.Client) ([]logFile, int64, e
 	useTempFile := contentLength > logSizeThreshold || contentLength < 0
 
 	var zipReader *zip.Reader
-	var cleanup func()
+	cleanup := func() {}
+	defer func() { cleanup() }()
 
 	if useTempFile {
 		// For large archives or unknown size, use a temp file
@@ -814,9 +823,6 @@ func readZipArchive(zipURL string, httpClient *http.Client) ([]logFile, int64, e
 		})
 	}
 
-	// Clean up temp file if used
-	cleanup()
-
 	// Sort by filename for consistent output
 	sort.Slice(logFiles, func(i, j int) bool {
 		return logFiles[i].name < logFiles[j].name
@@ -828,7 +834,7 @@ func readZipArchive(zipURL string, httpClient *http.Client) ([]logFile, int64, e
 // GetWorkflowLogFiles returns a list of log files available in the workflow run archive
 func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFileInfo, error) {
 	// Get the log archive URL
-	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
+	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, maxRedirects)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
 	}
@@ -839,8 +845,8 @@ func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFi
 		}
 	}
 
-	// Fetch ZIP archive
-	logFiles, _, err := readZipArchive(url.String(), c.gh.Client())
+	// Fetch ZIP archive (use unauthenticated client for pre-signed storage URLs)
+	logFiles, _, err := readZipArchive(url.String(), presignedHTTPClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read log archive for run %d: %w", runID, err)
 	}
@@ -860,7 +866,7 @@ func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFi
 // GetWorkflowLogsWithPattern retrieves logs for a workflow run with optional file pattern filtering
 func (c *Client) GetWorkflowLogsWithPattern(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filePattern string, filterOpts *LogFilterOptions) (string, error) {
 	// Get the log archive URL
-	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, 10)
+	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, maxRedirects)
 	if err != nil {
 		return "", fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
 	}
@@ -871,8 +877,8 @@ func (c *Client) GetWorkflowLogsWithPattern(ctx context.Context, runID int64, he
 		}
 	}
 
-	// Read ZIP archive
-	logFiles, _, err := readZipArchive(url.String(), c.gh.Client())
+	// Read ZIP archive (use unauthenticated client for pre-signed storage URLs)
+	logFiles, _, err := readZipArchive(url.String(), presignedHTTPClient)
 	if err != nil {
 		return "", fmt.Errorf("failed to read log archive for run %d: %w", runID, err)
 	}
@@ -1218,7 +1224,7 @@ func (c *Client) GetWorkflowJobs(ctx context.Context, runID int64, filter string
 // GetWorkflowJobLogs retrieves logs for a specific job
 func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
 	// Get the log archive
-	url, resp, err := c.gh.Actions.GetWorkflowJobLogs(ctx, c.owner, c.repo, jobID, 10)
+	url, resp, err := c.gh.Actions.GetWorkflowJobLogs(ctx, c.owner, c.repo, jobID, maxRedirects)
 	if err != nil {
 		return "", fmt.Errorf("failed to get job log URL for job %d: %w", jobID, err)
 	}
@@ -1236,7 +1242,7 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 	if err != nil {
 		return "", fmt.Errorf("failed to build job log request for job %d: %w", jobID, err)
 	}
-	zipResp, err := http.DefaultClient.Do(req)
+	zipResp, err := presignedHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch job logs for job %d: %w", jobID, err)
 	}
@@ -1246,8 +1252,8 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 		return "", &HTTPError{StatusCode: zipResp.StatusCode, Message: fmt.Sprintf("failed to fetch job logs: HTTP %d", zipResp.StatusCode)}
 	}
 
-	// Read the payload data (may be ZIP or plain text).
-	zipData, err := io.ReadAll(zipResp.Body)
+	// Read the payload data (may be ZIP or plain text), bounded to maxLogFileSize.
+	zipData, err := io.ReadAll(io.LimitReader(zipResp.Body, maxLogFileSize))
 	if err != nil {
 		return "", fmt.Errorf("failed to read job logs for job %d: %w", jobID, err)
 	}
@@ -1399,7 +1405,7 @@ func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, fileP
 	}
 
 	// Download the artifact ZIP
-	zipURL, resp, err := c.gh.Actions.DownloadArtifact(ctx, c.owner, c.repo, artifactID, 10)
+	zipURL, resp, err := c.gh.Actions.DownloadArtifact(ctx, c.owner, c.repo, artifactID, maxRedirects)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get artifact download URL: %w", err)
 	}
@@ -1416,7 +1422,7 @@ func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, fileP
 	if err != nil {
 		return nil, fmt.Errorf("failed to build artifact request: %w", err)
 	}
-	zipResp, err := http.DefaultClient.Do(req)
+	zipResp, err := presignedHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch artifact: %w", err)
 	}
@@ -1447,17 +1453,6 @@ func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, fileP
 			continue
 		}
 
-		// Skip files larger than maxFileSize (if specified)
-		if maxFileSize > 0 && file.UncompressedSize64 > uint64(maxFileSize) {
-			files = append(files, &ArtifactFile{
-				Path:    file.Name,
-				Size:    int64(file.UncompressedSize64),
-				Content: fmt.Sprintf("(file too large to read, size: %d bytes)", file.UncompressedSize64),
-			})
-			totalSize += int64(file.UncompressedSize64)
-			continue
-		}
-
 		// Apply file pattern filter if specified
 		if filePattern != "" {
 			matched, err := filepath.Match(filePattern, file.Name)
@@ -1467,6 +1462,17 @@ func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, fileP
 			if !matched {
 				continue
 			}
+		}
+
+		// Skip files larger than maxFileSize (if specified)
+		if maxFileSize > 0 && file.UncompressedSize64 > uint64(maxFileSize) {
+			files = append(files, &ArtifactFile{
+				Path:    file.Name,
+				Size:    int64(file.UncompressedSize64),
+				Content: fmt.Sprintf("(file too large to read, size: %d bytes)", file.UncompressedSize64),
+			})
+			totalSize += int64(file.UncompressedSize64)
+			continue
 		}
 
 		// Read file content
@@ -1530,7 +1536,7 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 	}
 
 	// Download the artifact ZIP
-	zipURL, resp, err := c.gh.Actions.DownloadArtifact(ctx, c.owner, c.repo, artifactID, 10)
+	zipURL, resp, err := c.gh.Actions.DownloadArtifact(ctx, c.owner, c.repo, artifactID, maxRedirects)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get artifact download URL: %w", err)
 	}
@@ -1547,7 +1553,7 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 	if err != nil {
 		return nil, fmt.Errorf("failed to build artifact request: %w", err)
 	}
-	zipResp, err := http.DefaultClient.Do(req)
+	zipResp, err := presignedHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch artifact: %w", err)
 	}
@@ -1564,11 +1570,20 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 	}
 	defer outFile.Close()
 
+	// Track whether write succeeded; remove partial file on failure
+	writeSucceeded := false
+	defer func() {
+		if !writeSucceeded {
+			os.Remove(outputPath)
+		}
+	}()
+
 	// Copy data to file
 	bytesWritten, err := io.Copy(outFile, zipResp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write artifact to file: %w", err)
 	}
+	writeSucceeded = true
 
 	// Count files in the archive
 	if _, err := outFile.Seek(0, 0); err != nil {
@@ -1931,29 +1946,31 @@ func (c *Client) WaitForCommitChecks(ctx context.Context, ref string, timeoutMin
 			return nil, fmt.Errorf("failed to get check runs: %w", err)
 		}
 
-		// Check if all checks are complete
-		allComplete := true
-		for _, cr := range status.CheckRuns {
-			if cr.Status != "completed" {
-				allComplete = false
-				break
+		// Check if all checks are complete (skip if no checks registered yet)
+		if len(status.CheckRuns) > 0 {
+			allComplete := true
+			for _, cr := range status.CheckRuns {
+				if cr.Status != "completed" {
+					allComplete = false
+					break
+				}
 			}
-		}
 
-		if allComplete {
-			elapsed := time.Since(startTime)
-			byConclusion := make(map[string]int)
-			for k, v := range status.ByConclusion {
-				byConclusion[k] = v
+			if allComplete {
+				elapsed := time.Since(startTime)
+				byConclusion := make(map[string]int)
+				for k, v := range status.ByConclusion {
+					byConclusion[k] = v
+				}
+				log.Infof("All checks completed for ref %s: %s (duration: %.1fs)", ref, status.State, elapsed.Seconds())
+				return &WaitCommitChecksResult{
+					OverallConclusion:  status.State,
+					ChecksTotal:        status.TotalCount,
+					ChecksByConclusion: byConclusion,
+					DurationSeconds:    elapsed.Seconds(),
+					TimeoutReached:     false,
+				}, nil
 			}
-			log.Infof("All checks completed for ref %s: %s (duration: %.1fs)", ref, status.State, elapsed.Seconds())
-			return &WaitCommitChecksResult{
-				OverallConclusion:  status.State,
-				ChecksTotal:        status.TotalCount,
-				ChecksByConclusion: byConclusion,
-				DurationSeconds:    elapsed.Seconds(),
-				TimeoutReached:     false,
-			}, nil
 		}
 
 		timer := time.NewTimer(pollDuration)

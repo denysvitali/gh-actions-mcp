@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
+	ghapi "github.com/google/go-github/v69/github"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -152,6 +154,11 @@ func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string 
 
 	if strings.Contains(errStr, "401") || strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "bad credentials") || strings.Contains(errStr, "log access unauthorized") {
 		return fmt.Sprintf("%s: %v\nGitHub rejected authentication for %s.\nSet a valid GITHUB_TOKEN and ensure it can read Actions data in this repository.", msg, err, repo)
+	}
+
+	var rateLimitErr *ghapi.RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		return fmt.Sprintf("%s: GitHub API rate limit exceeded for %s.\nTry again later or use a token with higher rate limits.", msg, repo)
 	}
 
 	if strings.Contains(errStr, "403") || strings.Contains(errStr, "insufficient") || strings.Contains(errStr, "forbidden") {
@@ -332,7 +339,7 @@ func (s *MCPServer) registerTools() {
 			mcp.DefaultNumber(1024*1024),
 		),
 		mcp.WithNumber("job_id",
-			mcp.Description("For element=logs: specific job ID to get logs for"),
+			mcp.Description("For element=logs or element=log_sections: specific job ID to get logs/sections for"),
 		),
 		mcp.WithBoolean("per_job",
 			mcp.Description("For element=logs: get logs per-job instead of all logs combined"),
@@ -420,7 +427,7 @@ func (s *MCPServer) registerTools() {
 
 	// Tool: wait_for_commit_checks
 	s.srv.AddTool(mcp.NewTool("wait_for_commit_checks",
-		mcp.WithDescription("Wait for workflow statuses for a commit to complete (tool name kept for backward compatibility)."),
+		mcp.WithDescription("Wait for all CI check runs for a commit ref (SHA, branch, or tag) to complete."),
 		mcp.WithString("owner",
 			mcp.Description("Optional: override repository owner for this call"),
 		),
@@ -554,9 +561,13 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 
 	if perPage, ok := args["per_page"].(float64); ok && perPage > 0 {
 		opts.Per_page = int(perPage)
+		if opts.Per_page > 100 {
+			opts.Per_page = 100
+		}
 	}
 
-	if workflowIDStr, ok := args["workflow_id"].(string); ok && workflowIDStr != "" {
+	if workflowIDNum, ok := args["workflow_id"].(float64); ok && workflowIDNum > 0 {
+		workflowIDStr := fmt.Sprintf("%.0f", workflowIDNum)
 		if workflowID, _, err := client.ResolveWorkflowID(ctx, workflowIDStr); err == nil {
 			opts.WorkflowID = &workflowID
 		}
@@ -564,8 +575,8 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 
 	if branch, ok := args["branch"].(string); ok && branch != "" {
 		opts.Branch = branch
-	} else {
-		// Auto-detect branch
+	} else if owner == s.config.RepoOwner && repo == s.config.RepoName {
+		// Auto-detect branch only for the configured repo (not cross-repo overrides)
 		if detectedBranch, err := github.GetCurrentBranch(); err == nil {
 			opts.Branch = detectedBranch
 			s.log.Debugf("Auto-detected branch: %s", detectedBranch)
@@ -634,7 +645,7 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 				URL:        r.URL,
 				RunNumber:  r.RunNumber,
 				WorkflowID: r.WorkflowID,
-				HeadSHA:    "",
+				HeadSHA:    r.HeadSHA,
 			})
 		}
 		return jsonResult(result)
@@ -650,7 +661,7 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 					CreatedAt:  r.CreatedAt,
 				},
 				Branch: r.Branch,
-				SHA:    "",
+				SHA:    r.HeadSHA,
 				Event:  r.Event,
 				Actor:  r.Actor,
 				URL:    r.URL,
@@ -727,7 +738,7 @@ func (s *MCPServer) getRunInfo(ctx context.Context, client *github.Client, owner
 			URL:        run.URL,
 			RunNumber:  run.RunNumber,
 			WorkflowID: run.WorkflowID,
-			HeadSHA:    "",
+			HeadSHA:    run.HeadSHA,
 		}
 		return jsonResult(result)
 	default: // compact
@@ -740,7 +751,7 @@ func (s *MCPServer) getRunInfo(ctx context.Context, client *github.Client, owner
 				CreatedAt:  run.CreatedAt,
 			},
 			Branch: run.Branch,
-			SHA:    "",
+			SHA:    run.HeadSHA,
 			Event:  run.Event,
 			Actor:  run.Actor,
 			URL:    run.URL,
@@ -771,7 +782,7 @@ func (s *MCPServer) getRunJobs(ctx context.Context, client *github.Client, owner
 	}
 
 	if format == "full" {
-		return jsonResult(jobs)
+		return jsonResultPretty(jobs)
 	}
 	return jsonResult(jobs)
 }
@@ -952,7 +963,7 @@ func (s *MCPServer) getRunArtifacts(ctx context.Context, client *github.Client, 
 	}
 
 	if format == "full" {
-		return jsonResult(artifacts)
+		return jsonResultPretty(artifacts)
 	}
 	return jsonResult(artifacts)
 }
@@ -1051,13 +1062,15 @@ func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequ
 	ref := ""
 	if r, ok := args["ref"].(string); ok && r != "" {
 		ref = strings.TrimSpace(r)
-	} else {
-		// Auto-detect ref (HEAD SHA)
+	} else if owner == s.config.RepoOwner && repo == s.config.RepoName {
+		// Auto-detect ref only for the configured repo (not cross-repo overrides)
 		if commit, err := github.GetLastCommit(); err == nil {
 			ref = commit.SHA
 		} else {
 			return errorResult("could not determine ref - please specify explicitly"), nil
 		}
+	} else {
+		return errorResult("ref is required when querying a different repository"), nil
 	}
 
 	opts := &github.GetCheckRunsOptions{}
@@ -1117,13 +1130,18 @@ func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest)
 	timeoutMinutes := 30
 	if tm, ok := args["timeout_minutes"].(float64); ok && tm > 0 {
 		timeoutMinutes = int(tm)
+		if timeoutMinutes > 120 {
+			timeoutMinutes = 120
+		}
 	}
 
 	s.log.Infof("Waiting for run %d (timeout: %dm)", runID, timeoutMinutes)
 
 	result, err := client.WaitForRun(ctx, runID, timeoutMinutes)
-	if err != nil && !result.TimeoutReached {
-		return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for run", owner, repo)), nil
+	if err != nil {
+		if result == nil || !result.TimeoutReached {
+			return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for run", owner, repo)), nil
+		}
 	}
 
 	return jsonResult(result)
@@ -1144,13 +1162,18 @@ func (s *MCPServer) waitForCommitChecks(ctx context.Context, request mcp.CallToo
 	timeoutMinutes := 30
 	if tm, ok := args["timeout_minutes"].(float64); ok && tm > 0 {
 		timeoutMinutes = int(tm)
+		if timeoutMinutes > 120 {
+			timeoutMinutes = 120
+		}
 	}
 
 	s.log.Infof("Waiting for checks on ref %s (timeout: %dm)", ref, timeoutMinutes)
 
 	result, err := client.WaitForCommitChecks(ctx, ref, timeoutMinutes)
-	if err != nil && !result.TimeoutReached {
-		return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for checks", owner, repo)), nil
+	if err != nil {
+		if result == nil || !result.TimeoutReached {
+			return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for checks", owner, repo)), nil
+		}
 	}
 
 	return jsonResult(result)
@@ -1246,6 +1269,10 @@ func (s *MCPServer) downloadArtifact(ctx context.Context, request mcp.CallToolRe
 
 	outputPath := ""
 	if op, ok := args["output_path"].(string); ok {
+		// Reject absolute paths and path components that escape the current directory
+		if filepath.IsAbs(op) || strings.Contains(op, "..") {
+			return errorResult("output_path must be a relative path without '..' components"), nil
+		}
 		outputPath = op
 	}
 

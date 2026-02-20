@@ -233,7 +233,7 @@ func TestGetWorkflowLogs(t *testing.T) {
 	}
 
 	// Get all logs
-	logs, err := client.GetWorkflowLogs(ctx, runID, 0, 0, false, nil)
+	logs, err := client.GetWorkflowLogs(ctx, runID, 0, 0, 0, false, nil)
 	if err != nil {
 		// Logs might not be available for various reasons
 		t.Logf("Could not retrieve logs: %v", err)
@@ -290,7 +290,7 @@ func TestGetWorkflowLogsWithFilter(t *testing.T) {
 		ContextLines: 2,
 	}
 
-	logs, err := client.GetWorkflowLogs(ctx, runID, 0, 0, false, filterOpts)
+	logs, err := client.GetWorkflowLogs(ctx, runID, 0, 0, 0, false, filterOpts)
 	if err != nil {
 		t.Logf("Could not retrieve logs: %v", err)
 		return
@@ -378,7 +378,7 @@ func TestWorkflowLifecycle(t *testing.T) {
 
 	// Step 5: Get logs
 	t.Log("Step 4: Retrieving workflow logs...")
-	logs, err := client.GetWorkflowLogs(ctx, triggeredRunID, 100, 0, false, nil)
+	logs, err := client.GetWorkflowLogs(ctx, triggeredRunID, 100, 0, 0, false, nil)
 	if err != nil {
 		t.Logf("Could not retrieve logs: %v", err)
 	} else {
