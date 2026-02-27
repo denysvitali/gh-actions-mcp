@@ -141,6 +141,14 @@ func (s *MCPServer) getLimit() int {
 	return DefaultListLimit
 }
 
+// getLogLines returns the max log lines from config or default
+func (s *MCPServer) getLogLines() int {
+	if s.config.DefaultLogLen > 0 {
+		return s.config.DefaultLogLen
+	}
+	return DefaultLogLines
+}
+
 
 func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string {
 	errStr := ""
@@ -206,6 +214,35 @@ func jsonResultPretty(data interface{}) (*mcp.CallToolResult, error) {
 // textResult returns a simple text response
 func textResult(msg string) *mcp.CallToolResult {
 	return mcp.NewToolResultText(msg)
+}
+
+// truncateLogResult auto-truncates log output to the last defaultLines lines
+// when the caller hasn't applied any explicit limiting parameters.
+// Appends a banner with total line count and usage hints for the AI agent.
+func truncateLogResult(logs string, defaultLines int, callerLimited bool) *mcp.CallToolResult {
+	if callerLimited || logs == "" {
+		return mcp.NewToolResultText(logs)
+	}
+
+	lines := strings.Split(logs, "\n")
+	total := len(lines)
+
+	// Trim trailing empty line from final newline
+	if total > 0 && lines[total-1] == "" {
+		total--
+		lines = lines[:total]
+	}
+
+	if total <= defaultLines {
+		return mcp.NewToolResultText(logs)
+	}
+
+	truncated := lines[total-defaultLines:]
+	banner := fmt.Sprintf(
+		"\n--- [showing last %d of %d lines] ---\nUse head/tail/offset/search/search_regex/section/file_pattern to refine.\nExample: tail=%d, or search=\"error\"",
+		defaultLines, total, min(total, defaultLines*4),
+	)
+	return mcp.NewToolResultText(strings.Join(truncated, "\n") + banner)
 }
 
 // errorResult returns an error response
@@ -348,10 +385,10 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("For element=jobs: attempt number for the jobs (default: latest)"),
 		),
 		mcp.WithNumber("head",
-			mcp.Description("For element=logs: return the first N lines of logs"),
+			mcp.Description("For element=logs: return the first N lines of logs. Without head or tail, logs are auto-truncated to the last ~100 lines"),
 		),
 		mcp.WithNumber("tail",
-			mcp.Description("For element=logs: return the last N lines of logs"),
+			mcp.Description("For element=logs: return the last N lines of logs (default: auto-truncated to last ~100 lines if neither head nor tail is specified)"),
 		),
 		mcp.WithNumber("offset",
 			mcp.Description("For element=logs: skip first N lines before returning (0-based)"),
@@ -881,7 +918,8 @@ func (s *MCPServer) getRunLogs(ctx context.Context, client *github.Client, owner
 		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for run %d", runID), owner, repo)), nil
 	}
 
-	return textResult(logs), nil
+	callerLimited := head > 0 || tail > 0 || search != "" || searchRegex != "" || section != ""
+	return truncateLogResult(logs, s.getLogLines(), callerLimited), nil
 }
 
 func (s *MCPServer) getJobLogs(ctx context.Context, client *github.Client, owner, repo string, jobID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
@@ -957,7 +995,8 @@ func (s *MCPServer) getJobLogs(ctx context.Context, client *github.Client, owner
 		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for job %d", jobID), owner, repo)), nil
 	}
 
-	return textResult(logs), nil
+	callerLimited := head > 0 || tail > 0 || search != "" || searchRegex != "" || section != ""
+	return truncateLogResult(logs, s.getLogLines(), callerLimited), nil
 }
 
 func (s *MCPServer) getRunArtifacts(ctx context.Context, client *github.Client, owner, repo string, runID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
