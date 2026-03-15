@@ -211,6 +211,53 @@ func TestIsValidRunElement(t *testing.T) {
 	assert.False(t, isValidRunElement("unknown"))
 }
 
+func TestFailureDiagnosisJSONFromServer(t *testing.T) {
+	d := &github.FailureDiagnosis{
+		RunID:      42,
+		RunName:    "CI",
+		RunURL:     "https://example.com/run/42",
+		Branch:     "main",
+		HeadSHA:    "abc123",
+		Conclusion: "failure",
+		FailedJobs: []*github.FailedJob{
+			{
+				JobID:      100,
+				JobName:    "build",
+				Conclusion: "failure",
+				FailedSteps: []*github.FailedStep{
+					{Name: "Compile", Number: 3, Conclusion: "failure"},
+				},
+				ErrorLines: []string{"error: undefined reference"},
+			},
+		},
+		Flakiness: &github.FlakinessInfo{
+			RecentRuns:      5,
+			RecentFailures:  1,
+			RecentSuccesses: 4,
+			Verdict:         "first_failure",
+		},
+		Summary: "1 failed job(s): build.",
+	}
+
+	data, err := json.Marshal(d)
+	require.NoError(t, err)
+
+	var decoded github.FailureDiagnosis
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+
+	assert.Equal(t, d.RunID, decoded.RunID)
+	assert.Equal(t, d.RunName, decoded.RunName)
+	assert.Equal(t, d.RunURL, decoded.RunURL)
+	assert.Equal(t, d.Branch, decoded.Branch)
+	assert.Equal(t, d.Conclusion, decoded.Conclusion)
+	assert.Len(t, decoded.FailedJobs, 1)
+	assert.Equal(t, "build", decoded.FailedJobs[0].JobName)
+	assert.Len(t, decoded.FailedJobs[0].ErrorLines, 1)
+	assert.NotNil(t, decoded.Flakiness)
+	assert.Equal(t, "first_failure", decoded.Flakiness.Verdict)
+}
+
 func TestFormatWorkflowStatusSummary(t *testing.T) {
 	status := &github.CombinedCheckStatus{
 		State:      "failure",

@@ -10,6 +10,7 @@ A Model Context Protocol (MCP) server for interacting with GitHub Actions. Provi
 - **Trigger Workflow**: Manually trigger a workflow to run
 - **Cancel Workflow Run**: Cancel a running workflow
 - **Rerun Workflow**: Rerun a failed workflow
+- **Diagnose Failure**: One-shot diagnosis of a failed run — identifies failed jobs/steps, extracts error lines from logs, and checks for flakiness
 
 ## Installation
 

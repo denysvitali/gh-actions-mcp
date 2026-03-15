@@ -521,6 +521,27 @@ func (s *MCPServer) registerTools() {
 		),
 	), s.getArtifact)
 
+	// Tool: diagnose_failure
+	s.srv.AddTool(mcp.NewTool("diagnose_failure",
+		mcp.WithDescription("One-shot diagnosis of a failed workflow run: identifies failed jobs/steps, extracts error lines from logs, and optionally checks for flakiness. Returns a structured diagnosis with actionable error context."),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
+		mcp.WithNumber("run_id",
+			mcp.Description("The workflow run ID to diagnose. If omitted, diagnoses the latest failed run on the current branch."),
+		),
+		mcp.WithBoolean("check_flakiness",
+			mcp.Description("Compare against recent runs to detect flaky tests (default: true). Adds a few extra API calls."),
+		),
+		mcp.WithNumber("max_error_lines",
+			mcp.Description("Maximum number of error lines to extract per job (default: 50)"),
+			mcp.DefaultNumber(50),
+		),
+	), s.diagnoseFailure)
+
 	// Tool: download_artifact
 	s.srv.AddTool(mcp.NewTool("download_artifact",
 		mcp.WithDescription("Download a workflow run artifact to disk"),
@@ -1332,6 +1353,69 @@ func (s *MCPServer) downloadArtifact(ctx context.Context, request mcp.CallToolRe
 	}
 
 	return jsonResultPretty(result)
+}
+
+func (s *MCPServer) diagnoseFailure(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	// Check flakiness defaults to true
+	checkFlakiness := true
+	if cf, ok := args["check_flakiness"].(bool); ok {
+		checkFlakiness = cf
+	}
+
+	maxErrorLines := 50
+	if mel, ok := args["max_error_lines"].(float64); ok && mel > 0 {
+		maxErrorLines = int(mel)
+	}
+
+	var runID int64
+	if rid, ok := extractRunID(args); ok {
+		runID = rid
+	} else {
+		// Auto-detect: find the latest failed run on the current branch
+		branch := ""
+		if owner == s.config.RepoOwner && repo == s.config.RepoName {
+			if detectedBranch, err := github.GetCurrentBranch(); err == nil {
+				branch = detectedBranch
+			}
+		}
+
+		opts := &github.ListRunsOptions{
+			Per_page:   5,
+			Status:     "completed",
+			Conclusion: "failure",
+			Branch:     branch,
+		}
+
+		runs, err := client.ListRepositoryWorkflowRunsWithOptions(ctx, opts)
+		if err != nil {
+			return errorResult(s.formatAuthErrorForRepo(err, "failed to find failed runs", owner, repo)), nil
+		}
+
+		if len(runs) == 0 {
+			msg := "No failed runs found"
+			if branch != "" {
+				msg += fmt.Sprintf(" on branch %s", branch)
+			}
+			return errorResult(msg), nil
+		}
+
+		runID = runs[0].ID
+	}
+
+	s.log.Infof("Diagnosing failure for run %d on %s/%s", runID, owner, repo)
+
+	diagnosis, err := client.DiagnoseFailure(ctx, runID, checkFlakiness, maxErrorLines)
+	if err != nil {
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to diagnose run %d", runID), owner, repo)), nil
+	}
+
+	return jsonResultPretty(diagnosis)
 }
 
 // getFormat returns the format from config or default

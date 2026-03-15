@@ -2257,3 +2257,283 @@ func extractSectionName(line, marker string) string {
 	name := line[idx+len(marker):]
 	return strings.TrimSpace(name)
 }
+
+// FailureDiagnosis is the top-level result of diagnosing a failed workflow run
+type FailureDiagnosis struct {
+	RunID       int64          `json:"run_id"`
+	RunName     string         `json:"run_name"`
+	RunURL      string         `json:"run_url"`
+	Branch      string         `json:"branch"`
+	HeadSHA     string         `json:"head_sha"`
+	Conclusion  string         `json:"conclusion"`
+	FailedJobs  []*FailedJob   `json:"failed_jobs"`
+	Flakiness   *FlakinessInfo `json:"flakiness,omitempty"`
+	Summary     string         `json:"summary"`
+}
+
+// FailedJob represents a job that failed within a workflow run
+type FailedJob struct {
+	JobID       int64         `json:"job_id"`
+	JobName     string        `json:"job_name"`
+	Conclusion  string        `json:"conclusion"`
+	FailedSteps []*FailedStep `json:"failed_steps"`
+	ErrorLines  []string      `json:"error_lines"`
+}
+
+// FailedStep represents a step that failed within a job
+type FailedStep struct {
+	Name       string `json:"name"`
+	Number     int64  `json:"number"`
+	Conclusion string `json:"conclusion"`
+}
+
+// FlakinessInfo contains information about whether this failure is likely a flake
+type FlakinessInfo struct {
+	RecentRuns       int    `json:"recent_runs_checked"`
+	RecentFailures   int    `json:"recent_failures"`
+	RecentSuccesses  int    `json:"recent_successes"`
+	SameFailureCount int    `json:"same_failure_count"`
+	Verdict          string `json:"verdict"` // "likely_flake", "likely_regression", "first_failure", "unknown"
+}
+
+// errorPatterns are regex patterns that identify error lines in CI logs
+var errorPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^.*error[:\[].*`),
+	regexp.MustCompile(`(?i)^.*FAIL[:\s].*`),
+	regexp.MustCompile(`(?i)^.*fatal[:\s].*`),
+	regexp.MustCompile(`(?i)^.*panic[:\s].*`),
+	regexp.MustCompile(`(?i)^.*exception[:\s].*`),
+	regexp.MustCompile(`(?i)^.*traceback.*`),
+	regexp.MustCompile(`(?i)^E\s+\w+`),                // pytest-style "E   AssertionError"
+	regexp.MustCompile(`--- FAIL:`),                     // Go test failures
+	regexp.MustCompile(`(?i)exit code [1-9]`),           // non-zero exit codes
+	regexp.MustCompile(`(?i)command.*failed`),
+	regexp.MustCompile(`(?i)process completed with exit code [1-9]`),
+	regexp.MustCompile(`##\[error\]`),                   // GitHub Actions error annotations
+}
+
+// DiagnoseFailure performs a comprehensive diagnosis of a failed workflow run.
+// It fetches the run, identifies failed jobs and steps, extracts error lines from
+// logs, and optionally checks for flakiness by comparing against recent runs.
+func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakiness bool, maxLogLines int) (*FailureDiagnosis, error) {
+	if maxLogLines <= 0 {
+		maxLogLines = 200
+	}
+
+	// 1. Get the run info
+	run, err := c.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get run %d: %w", runID, err)
+	}
+
+	diagnosis := &FailureDiagnosis{
+		RunID:      run.ID,
+		RunName:    run.Name,
+		RunURL:     run.URL,
+		Branch:     run.Branch,
+		HeadSHA:    run.HeadSHA,
+		Conclusion: run.Conclusion,
+	}
+
+	if run.Status != "completed" {
+		diagnosis.Summary = fmt.Sprintf("Run %d is still %s (not completed yet)", runID, run.Status)
+		return diagnosis, nil
+	}
+
+	if run.Conclusion == "success" {
+		diagnosis.Summary = fmt.Sprintf("Run %d succeeded — nothing to diagnose", runID)
+		return diagnosis, nil
+	}
+
+	// 2. Get jobs and identify failures
+	jobs, err := c.GetWorkflowJobs(ctx, runID, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get jobs for run %d: %w", runID, err)
+	}
+
+	for _, job := range jobs {
+		if job.Conclusion != "failure" && job.Conclusion != "cancelled" && job.Conclusion != "timed_out" {
+			continue
+		}
+
+		failedJob := &FailedJob{
+			JobID:      job.ID,
+			JobName:    job.Name,
+			Conclusion: job.Conclusion,
+		}
+
+		// Identify failed steps
+		for _, step := range job.Steps {
+			if step.Conclusion == "failure" || step.Conclusion == "cancelled" || step.Conclusion == "timed_out" {
+				failedJob.FailedSteps = append(failedJob.FailedSteps, &FailedStep{
+					Name:       step.Name,
+					Number:     step.Number,
+					Conclusion: step.Conclusion,
+				})
+			}
+		}
+
+		// 3. Extract error lines from job logs
+		errorLines := c.extractErrorLines(ctx, job.ID, maxLogLines)
+		failedJob.ErrorLines = errorLines
+
+		diagnosis.FailedJobs = append(diagnosis.FailedJobs, failedJob)
+	}
+
+	// 4. Optional flakiness check
+	if checkFlakiness && run.WorkflowID > 0 {
+		diagnosis.Flakiness = c.checkFlakiness(ctx, run, diagnosis.FailedJobs)
+	}
+
+	// 5. Build summary
+	diagnosis.Summary = c.buildDiagnosisSummary(diagnosis)
+
+	return diagnosis, nil
+}
+
+// extractErrorLines fetches logs for a job and extracts lines matching error patterns
+func (c *Client) extractErrorLines(ctx context.Context, jobID int64, maxLines int) []string {
+	logs, err := c.GetWorkflowJobLogs(ctx, jobID, 0, 0, 0, true, nil)
+	if err != nil {
+		log.Debugf("Could not fetch logs for job %d: %v", jobID, err)
+		return []string{fmt.Sprintf("[could not fetch logs: %v]", err)}
+	}
+
+	lines := strings.Split(logs, "\n")
+	var errorLines []string
+	seen := make(map[string]bool)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		for _, pattern := range errorPatterns {
+			if pattern.MatchString(trimmed) {
+				// Remove timestamps that GitHub Actions prepends (e.g., "2024-01-15T10:30:00.1234567Z ")
+				cleaned := trimmed
+				if len(cleaned) > 30 && cleaned[4] == '-' && cleaned[10] == 'T' {
+					if spaceIdx := strings.Index(cleaned, " "); spaceIdx > 0 && spaceIdx < 35 {
+						cleaned = cleaned[spaceIdx+1:]
+					}
+				}
+				if !seen[cleaned] {
+					seen[cleaned] = true
+					errorLines = append(errorLines, cleaned)
+				}
+				break
+			}
+		}
+
+		if len(errorLines) >= maxLines {
+			break
+		}
+	}
+
+	return errorLines
+}
+
+// checkFlakiness compares the current failure against recent runs of the same workflow
+func (c *Client) checkFlakiness(ctx context.Context, run *WorkflowRun, failedJobs []*FailedJob) *FlakinessInfo {
+	info := &FlakinessInfo{}
+
+	recentRuns, err := c.GetWorkflowRuns(ctx, run.WorkflowID, run.Branch)
+	if err != nil {
+		log.Debugf("Could not fetch recent runs for flakiness check: %v", err)
+		info.Verdict = "unknown"
+		return info
+	}
+
+	// Get the names of failed jobs for comparison
+	failedJobNames := make(map[string]bool)
+	for _, fj := range failedJobs {
+		failedJobNames[fj.JobName] = true
+	}
+
+	maxCheck := 10
+	sameFailures := 0
+	successes := 0
+	failures := 0
+	checked := 0
+
+	for _, r := range recentRuns {
+		if r.ID == run.ID || r.Status != "completed" {
+			continue
+		}
+		checked++
+		if checked > maxCheck {
+			break
+		}
+
+		switch r.Conclusion {
+		case "success":
+			successes++
+		case "failure":
+			failures++
+			// Check if the same jobs failed
+			jobs, err := c.GetWorkflowJobs(ctx, r.ID, "", 0)
+			if err != nil {
+				continue
+			}
+			for _, j := range jobs {
+				if j.Conclusion == "failure" && failedJobNames[j.Name] {
+					sameFailures++
+					break
+				}
+			}
+		}
+	}
+
+	info.RecentRuns = checked
+	info.RecentFailures = failures
+	info.RecentSuccesses = successes
+	info.SameFailureCount = sameFailures
+
+	switch {
+	case checked == 0:
+		info.Verdict = "unknown"
+	case sameFailures >= 2 && successes > 0:
+		info.Verdict = "likely_flake"
+	case successes == 0 && failures > 0:
+		info.Verdict = "likely_regression"
+	case failures == 0:
+		info.Verdict = "first_failure"
+	default:
+		info.Verdict = "likely_regression"
+	}
+
+	return info
+}
+
+// buildDiagnosisSummary creates a human-readable summary of the diagnosis
+func (c *Client) buildDiagnosisSummary(d *FailureDiagnosis) string {
+	var sb strings.Builder
+
+	if len(d.FailedJobs) == 0 {
+		sb.WriteString(fmt.Sprintf("Run %d concluded as %s but no failed jobs found (may be cancelled or skipped).", d.RunID, d.Conclusion))
+		return sb.String()
+	}
+
+	jobNames := make([]string, 0, len(d.FailedJobs))
+	totalErrors := 0
+	for _, fj := range d.FailedJobs {
+		jobNames = append(jobNames, fj.JobName)
+		totalErrors += len(fj.ErrorLines)
+	}
+
+	sb.WriteString(fmt.Sprintf("%d failed job(s): %s. ", len(d.FailedJobs), strings.Join(jobNames, ", ")))
+	sb.WriteString(fmt.Sprintf("%d error line(s) extracted from logs.", totalErrors))
+
+	if d.Flakiness != nil {
+		sb.WriteString(fmt.Sprintf(" Flakiness verdict: %s", d.Flakiness.Verdict))
+		if d.Flakiness.Verdict == "likely_flake" {
+			sb.WriteString(fmt.Sprintf(" (same job failed in %d of last %d runs, but %d succeeded).",
+				d.Flakiness.SameFailureCount, d.Flakiness.RecentRuns, d.Flakiness.RecentSuccesses))
+		} else {
+			sb.WriteString(".")
+		}
+	}
+
+	return sb.String()
+}
