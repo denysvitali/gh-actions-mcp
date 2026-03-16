@@ -135,8 +135,7 @@ func containsToken(remoteURL string) bool {
 		"api_token",  // Common query param name
 		"access_token",
 		"auth_token",
-		"@.*:",       // Basic auth with password (password:token@host)
-		"//.*:.*@",   // URL with embedded credentials
+		"//.*:.*@",   // URL with embedded credentials (e.g. https://user:token@host)
 	}
 
 	lowerURL := strings.ToLower(remoteURL)
