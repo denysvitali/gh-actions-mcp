@@ -157,8 +157,41 @@ func isGitHubURL(u *url.URL) bool {
 	return host == "github.com" || strings.HasSuffix(host, ".github.com")
 }
 
-// Detect attempts to detect the repository from git remote
-// Returns cached result if available, otherwise performs detection
+// resolveRemoteName determines the best remote to use for repo detection.
+// It checks the current branch's tracking remote first, then falls back to "origin".
+func resolveRemoteName(repo *git.Repository) string {
+	head, err := repo.Head()
+	if err != nil {
+		detectorLog.Debugf("Could not get HEAD: %v, falling back to origin", err)
+		return DefaultRemoteName
+	}
+
+	if !head.Name().IsBranch() {
+		detectorLog.Debugf("HEAD is not a branch (detached HEAD?), falling back to origin")
+		return DefaultRemoteName
+	}
+
+	branchName := head.Name().Short()
+
+	cfg, err := repo.Config()
+	if err != nil {
+		detectorLog.Debugf("Could not read repo config: %v, falling back to origin", err)
+		return DefaultRemoteName
+	}
+
+	branchCfg, ok := cfg.Branches[branchName]
+	if !ok || branchCfg.Remote == "" {
+		detectorLog.Debugf("Branch %q has no tracking remote, falling back to origin", branchName)
+		return DefaultRemoteName
+	}
+
+	detectorLog.Debugf("Branch %q tracks remote %q", branchName, branchCfg.Remote)
+	return branchCfg.Remote
+}
+
+// Detect attempts to detect the repository from git remote.
+// It uses the current branch's tracking remote if available, otherwise falls back to "origin".
+// Returns cached result if available, otherwise performs detection.
 func (d *RepoDetector) Detect() (*RepoInfo, error) {
 	// Check cache first
 	d.mu.RLock()
@@ -186,17 +219,28 @@ func (d *RepoDetector) Detect() (*RepoInfo, error) {
 
 	repo, err := git.PlainOpen(wd)
 	if err != nil {
-		return nil, fmt.Errorf("not in a git repository with an origin remote: %w", err)
+		return nil, fmt.Errorf("not in a git repository: %w", err)
 	}
 
-	// Get the origin remote
-	remote, err := repo.Remote("origin")
+	remoteName := resolveRemoteName(repo)
+
+	remote, err := repo.Remote(remoteName)
 	if err != nil {
-		return nil, fmt.Errorf("not in a git repository with an origin remote: %w", err)
+		// If the resolved remote doesn't exist and it's not origin, try origin as fallback
+		if remoteName != DefaultRemoteName {
+			detectorLog.Warnf("Remote %q not found, falling back to origin", remoteName)
+			remote, err = repo.Remote(DefaultRemoteName)
+			if err != nil {
+				return nil, fmt.Errorf("neither remote %q nor origin found: %w", remoteName, err)
+			}
+			remoteName = DefaultRemoteName
+		} else {
+			return nil, fmt.Errorf("remote %q not found: %w", remoteName, err)
+		}
 	}
 
 	if len(remote.Config().URLs) == 0 {
-		return nil, fmt.Errorf("not in a git repository with an origin remote: no URLs found")
+		return nil, fmt.Errorf("remote %q has no URLs", remoteName)
 	}
 
 	remoteURL := remote.Config().URLs[0]
@@ -204,13 +248,14 @@ func (d *RepoDetector) Detect() (*RepoInfo, error) {
 	// Parse the URL
 	owner, repoName, err := ParseGitURL(remoteURL)
 	if err != nil {
-		return nil, fmt.Errorf("not in a git repository with an origin remote: %w", err)
+		return nil, fmt.Errorf("could not parse owner/repo from remote %q: %w", remoteName, err)
 	}
 
+	source := fmt.Sprintf("git_remote(%s)", remoteName)
 	info := &RepoInfo{
 		Owner:  owner,
 		Repo:   repoName,
-		Source: "git_remote",
+		Source: source,
 		Cached: false,
 		RawURL: remoteURL,
 	}
@@ -221,7 +266,7 @@ func (d *RepoDetector) Detect() (*RepoInfo, error) {
 	d.mu.Unlock()
 
 	if detectorLog != nil {
-		detectorLog.Infof("Detected repo from git remote: %s/%s", owner, repoName)
+		detectorLog.Infof("Detected repo from remote %q: %s/%s", remoteName, owner, repoName)
 	}
 
 	return info, nil

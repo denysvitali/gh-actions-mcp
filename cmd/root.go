@@ -173,27 +173,20 @@ func loadConfig() (*config.Config, error) {
 }
 
 func inferRepoFromGit(cfg *config.Config) error {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("git command failed: %w", err)
-	}
-
-	remoteURL := strings.TrimRight(string(output), "\n\r")
-
-	owner, repo, err := github.InferRepoFromOrigin(remoteURL)
+	detector := github.NewRepoDetector()
+	info, err := detector.Detect()
 	if err != nil {
 		return err
 	}
 
 	if cfg.RepoOwner == "" {
-		cfg.RepoOwner = owner
+		cfg.RepoOwner = info.Owner
 	}
 	if cfg.RepoName == "" {
-		cfg.RepoName = repo
+		cfg.RepoName = info.Repo
 	}
 
-	log.Infof("Inferred repository from git: %s/%s", owner, repo)
+	log.Infof("Inferred repository from %s: %s/%s", info.Source, info.Owner, info.Repo)
 	return nil
 }
 
