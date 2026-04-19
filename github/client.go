@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -134,15 +135,29 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	hc := &http.Client{Timeout: 30 * time.Second}
 	gh := github.NewClient(hc).WithAuthToken(opts.Token)
 	if opts.APIBaseURL != "" {
-		uploadURL := opts.UploadURL
-		if uploadURL == "" {
-			uploadURL = opts.APIBaseURL
-		}
-		var err error
-		gh, err = gh.WithEnterpriseURLs(opts.APIBaseURL, uploadURL)
+		// Set BaseURL directly rather than via WithEnterpriseURLs, which
+		// would auto-append "api/v3/" and break non-Enterprise proxies
+		// (e.g. gh-proxy, which expects "/api/repos/...").
+		base, err := url.Parse(opts.APIBaseURL)
 		if err != nil {
-			return nil, fmt.Errorf("configure enterprise URLs: %w", err)
+			return nil, fmt.Errorf("parse api_base_url: %w", err)
 		}
+		if !strings.HasSuffix(base.Path, "/") {
+			base.Path += "/"
+		}
+		gh.BaseURL = base
+		uploadStr := opts.UploadURL
+		if uploadStr == "" {
+			uploadStr = opts.APIBaseURL
+		}
+		upload, err := url.Parse(uploadStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse upload_url: %w", err)
+		}
+		if !strings.HasSuffix(upload.Path, "/") {
+			upload.Path += "/"
+		}
+		gh.UploadURL = upload
 	}
 	return &Client{
 		owner:        opts.Owner,
