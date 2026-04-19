@@ -16,3 +16,10 @@ repo_name: repo
 
 # Log level: debug, info, warn, error
 log_level: info
+
+# Optional: route API calls through a GitHub Enterprise server or a reverse
+# proxy such as gh-proxy. Must end with a trailing slash. When set, the token
+# above should be the proxy's consumer token (not a GitHub PAT).
+# Env vars: GITHUB_API_BASE_URL / GH_API_BASE_URL, GITHUB_UPLOAD_URL / GH_UPLOAD_URL
+# api_base_url: http://gh-proxy:8080/api/
+# upload_url: http://gh-proxy:8080/api/uploads/

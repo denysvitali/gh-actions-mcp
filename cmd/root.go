@@ -299,7 +299,16 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create GitHub client
-	client := github.NewClient(cfg.Token, owner, repo)
+	client, err := github.NewClientWithOptions(github.ClientOptions{
+		Token:      cfg.Token,
+		Owner:      owner,
+		Repo:       repo,
+		APIBaseURL: cfg.APIBaseURL,
+		UploadURL:  cfg.UploadURL,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub client: %w", err)
+	}
 
 	// Prepare filter options
 	filterOpts := &github.LogFilterOptions{}

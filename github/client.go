@@ -102,18 +102,54 @@ func NewClient(token, owner, repo string) *Client {
 
 // NewClientWithPerPage creates a new GitHub client with a custom per-page limit
 func NewClientWithPerPage(token, owner, repo string, perPageLimit int) *Client {
-	if perPageLimit <= 0 {
-		perPageLimit = 50 // sensible default
+	c, _ := NewClientWithOptions(ClientOptions{
+		Token:        token,
+		Owner:        owner,
+		Repo:         repo,
+		PerPageLimit: perPageLimit,
+	})
+	return c
+}
+
+// ClientOptions configures a GitHub client. APIBaseURL / UploadURL enable
+// routing through a GitHub Enterprise server or a reverse proxy like gh-proxy.
+type ClientOptions struct {
+	Token        string
+	Owner        string
+	Repo         string
+	PerPageLimit int
+	// APIBaseURL overrides the default https://api.github.com/ base URL.
+	// Must end with a trailing slash (go-github requirement). Example for
+	// gh-proxy: "http://gh-proxy:8080/api/".
+	APIBaseURL string
+	// UploadURL overrides the upload URL. Defaults to APIBaseURL when empty.
+	UploadURL string
+}
+
+// NewClientWithOptions creates a new GitHub client using the provided options.
+func NewClientWithOptions(opts ClientOptions) (*Client, error) {
+	if opts.PerPageLimit <= 0 {
+		opts.PerPageLimit = 50
 	}
 	hc := &http.Client{Timeout: 30 * time.Second}
-	gh := github.NewClient(hc)
-	gh = gh.WithAuthToken(token)
-	return &Client{
-		owner:        owner,
-		repo:         repo,
-		gh:           gh,
-		perPageLimit: perPageLimit,
+	gh := github.NewClient(hc).WithAuthToken(opts.Token)
+	if opts.APIBaseURL != "" {
+		uploadURL := opts.UploadURL
+		if uploadURL == "" {
+			uploadURL = opts.APIBaseURL
+		}
+		var err error
+		gh, err = gh.WithEnterpriseURLs(opts.APIBaseURL, uploadURL)
+		if err != nil {
+			return nil, fmt.Errorf("configure enterprise URLs: %w", err)
+		}
 	}
+	return &Client{
+		owner:        opts.Owner,
+		repo:         opts.Repo,
+		gh:           gh,
+		perPageLimit: opts.PerPageLimit,
+	}, nil
 }
 
 type WorkflowRun struct {

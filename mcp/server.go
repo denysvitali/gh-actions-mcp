@@ -128,7 +128,18 @@ func (s *MCPServer) clientFromArgs(args map[string]interface{}) (*github.Client,
 	if perPageLimit <= 0 {
 		perPageLimit = 50
 	}
-	return github.NewClientWithPerPage(s.config.Token, owner, repo, perPageLimit), owner, repo, nil
+	c, err := github.NewClientWithOptions(github.ClientOptions{
+		Token:        s.config.Token,
+		Owner:        owner,
+		Repo:         repo,
+		PerPageLimit: perPageLimit,
+		APIBaseURL:   s.config.APIBaseURL,
+		UploadURL:    s.config.UploadURL,
+	})
+	if err != nil {
+		return nil, "", "", err
+	}
+	return c, owner, repo, nil
 }
 
 // Helper functions to reduce repetition
@@ -274,7 +285,17 @@ func NewMCPServer(cfg *config.Config, log *logrus.Logger) *MCPServer {
 		perPageLimit = 50
 	}
 
-	ghClient := github.NewClientWithPerPage(cfg.Token, cfg.RepoOwner, cfg.RepoName, perPageLimit)
+	ghClient, err := github.NewClientWithOptions(github.ClientOptions{
+		Token:        cfg.Token,
+		Owner:        cfg.RepoOwner,
+		Repo:         cfg.RepoName,
+		PerPageLimit: perPageLimit,
+		APIBaseURL:   cfg.APIBaseURL,
+		UploadURL:    cfg.UploadURL,
+	})
+	if err != nil {
+		log.Fatalf("failed to create GitHub client: %v", err)
+	}
 
 	mcpServer := &MCPServer{
 		srv:    s,
