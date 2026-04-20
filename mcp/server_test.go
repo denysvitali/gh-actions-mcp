@@ -439,3 +439,127 @@ func TestAnalyzeTimingTool(t *testing.T) {
 	assert.Equal(t, int64(103), analysis.Focus.RunID)
 	assert.NotEmpty(t, analysis.JobBreakdown)
 }
+
+func TestAnalyzeTimingTool_OmitsBranchWhenNotProvided(t *testing.T) {
+	owner := "octo"
+	repo := "hello-world"
+
+	var listRunsBranch string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/103", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": 103, "name": "CI", "status": "completed", "conclusion": "success",
+			"head_branch": "feature/test", "head_sha": "sha103", "event": "pull_request",
+			"created_at": "2026-04-20T10:00:00Z", "updated_at": "2026-04-20T10:05:00Z",
+			"run_started_at": "2026-04-20T10:00:00Z", "html_url": "https://example.com/run/103",
+			"run_number": 13, "workflow_id": 50, "actor": {"login": "alice"}
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/workflows/50/runs", func(w http.ResponseWriter, r *http.Request) {
+		listRunsBranch = r.URL.Query().Get("branch")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 2,
+			"workflow_runs": [
+				{
+					"id": 103, "name": "CI", "status": "completed", "conclusion": "success",
+					"head_branch": "feature/test", "head_sha": "sha103", "event": "pull_request",
+					"created_at": "2026-04-20T10:00:00Z", "updated_at": "2026-04-20T10:05:00Z",
+					"run_started_at": "2026-04-20T10:00:00Z", "html_url": "https://example.com/run/103",
+					"run_number": 13, "workflow_id": 50, "actor": {"login": "alice"}
+				},
+				{
+					"id": 102, "name": "CI", "status": "completed", "conclusion": "success",
+					"head_branch": "main", "head_sha": "sha102", "event": "push",
+					"created_at": "2026-04-19T10:00:00Z", "updated_at": "2026-04-19T10:04:00Z",
+					"run_started_at": "2026-04-19T10:00:00Z", "html_url": "https://example.com/run/102",
+					"run_number": 12, "workflow_id": 50, "actor": {"login": "bob"}
+				}
+			]
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/102/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"id":202,"name":"build","status":"completed","conclusion":"success","run_id":102,"started_at":"2026-04-19T10:00:00Z","completed_at":"2026-04-19T10:03:00Z","steps":[{"name":"Unit Tests","number":1,"status":"completed","conclusion":"success","started_at":"2026-04-19T10:00:00Z","completed_at":"2026-04-19T10:03:00Z"}]}]}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/103/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"id":203,"name":"build","status":"completed","conclusion":"success","run_id":103,"started_at":"2026-04-20T10:00:00Z","completed_at":"2026-04-20T10:04:00Z","steps":[{"name":"Unit Tests","number":1,"status":"completed","conclusion":"success","started_at":"2026-04-20T10:00:00Z","completed_at":"2026-04-20T10:04:00Z"}]}]}`))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	server := NewMCPServer(&config.Config{
+		Token:        "token",
+		RepoOwner:    owner,
+		RepoName:     repo,
+		APIBaseURL:   ts.URL + "/",
+		UploadURL:    ts.URL + "/",
+		PerPageLimit: 50,
+	}, logrus.New())
+
+	result, err := server.analyzeTiming(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "analyze_timing",
+			Arguments: map[string]interface{}{
+				"run_id": 103.0,
+				"limit":  2.0,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	assert.Empty(t, listRunsBranch)
+}
+
+func TestListRunsTool_OmitsBranchWhenNotProvided(t *testing.T) {
+	owner := "octo"
+	repo := "hello-world"
+
+	var listRunsBranch string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		listRunsBranch = r.URL.Query().Get("branch")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 2,
+			"workflow_runs": [
+				{
+					"id": 301, "name": "CI", "status": "completed", "conclusion": "success",
+					"head_branch": "feature/demo", "head_sha": "sha301", "event": "pull_request",
+					"created_at": "2026-04-20T10:00:00Z", "updated_at": "2026-04-20T10:02:00Z",
+					"run_started_at": "2026-04-20T10:00:00Z", "html_url": "https://example.com/run/301",
+					"run_number": 31, "workflow_id": 88, "actor": {"login": "alice"}
+				}
+			]
+		}`))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	server := NewMCPServer(&config.Config{
+		Token:        "token",
+		RepoOwner:    owner,
+		RepoName:     repo,
+		APIBaseURL:   ts.URL + "/",
+		UploadURL:    ts.URL + "/",
+		PerPageLimit: 50,
+	}, logrus.New())
+
+	result, err := server.listRuns(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "list_runs",
+			Arguments: map[string]interface{}{
+				"per_page": 5.0,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	assert.Empty(t, listRunsBranch)
+}

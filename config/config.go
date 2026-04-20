@@ -98,6 +98,19 @@ func Load(configPath string) (*Config, error) {
 }
 
 func (c *Config) Validate() error {
+	if err := c.ValidateToken(); err != nil {
+		return err
+	}
+	if c.RepoOwner == "" {
+		return fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
+	}
+	if c.RepoName == "" {
+		return fmt.Errorf("repository name is required. Set GH_REPO_NAME env var, 'repo_name' in config, or use --repo-name flag")
+	}
+	return nil
+}
+
+func (c *Config) ValidateToken() error {
 	if c.Token == "" {
 		// Try to get token from macOS keychain (only on macOS)
 		if runtime.GOOS == "darwin" {
@@ -112,12 +125,6 @@ func (c *Config) Validate() error {
 
 	if c.Token == "" {
 		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable, set 'token' in config file, or run 'gh auth login' on macOS")
-	}
-	if c.RepoOwner == "" {
-		return fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
-	}
-	if c.RepoName == "" {
-		return fmt.Errorf("repository name is required. Set GH_REPO_NAME env var, 'repo_name' in config, or use --repo-name flag")
 	}
 	return nil
 }

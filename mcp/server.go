@@ -341,7 +341,7 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("Optional: The workflow ID or name (e.g., '12345678' or 'CI') to filter by"),
 		),
 		mcp.WithString("branch",
-			mcp.Description("Optional: Branch to filter by (default: auto-detect from git repository)"),
+			mcp.Description("Optional: Branch to filter by. When omitted, runs from all branches are included."),
 		),
 		mcp.WithString("status",
 			mcp.Description("Optional: Status to filter by (queued, in_progress, completed, etc.)"),
@@ -451,7 +451,7 @@ func (s *MCPServer) registerTools() {
 			mcp.Description("Optional: focus on a specific workflow run ID. When omitted, the latest matching run is used."),
 		),
 		mcp.WithString("branch",
-			mcp.Description("Optional: branch to compare against. Defaults to the focus run branch or the current git branch for the configured repository."),
+			mcp.Description("Optional: branch to compare against. When omitted, compares against runs from all branches."),
 		),
 		mcp.WithString("job_name",
 			mcp.Description("Optional: analyze a specific job across runs. Required when step_name is provided."),
@@ -686,12 +686,6 @@ func (s *MCPServer) listRuns(ctx context.Context, request mcp.CallToolRequest) (
 
 	if branch, ok := args["branch"].(string); ok && branch != "" {
 		opts.Branch = branch
-	} else if owner == s.config.RepoOwner && repo == s.config.RepoName {
-		// Auto-detect branch only for the configured repo (not cross-repo overrides)
-		if detectedBranch, err := github.GetCurrentBranch(); err == nil {
-			opts.Branch = detectedBranch
-			s.log.Debugf("Auto-detected branch: %s", detectedBranch)
-		}
 	}
 
 	if status, ok := args["status"].(string); ok && status != "" {
@@ -1211,11 +1205,6 @@ func (s *MCPServer) analyzeTiming(ctx context.Context, request mcp.CallToolReque
 	branch := ""
 	if value, ok := args["branch"].(string); ok && value != "" {
 		branch = strings.TrimSpace(value)
-	} else if runID == 0 && owner == s.config.RepoOwner && repo == s.config.RepoName {
-		if detectedBranch, err := github.GetCurrentBranch(); err == nil {
-			branch = detectedBranch
-			s.log.Debugf("Auto-detected branch for timing analysis: %s", branch)
-		}
 	}
 
 	conclusion := ""
@@ -1556,4 +1545,30 @@ func (s *MCPServer) getFormat() string {
 
 func (s *MCPServer) GetServer() *server.MCPServer {
 	return s.srv
+}
+
+// InvokeTool executes a registered MCP tool handler in-process.
+func (s *MCPServer) InvokeTool(ctx context.Context, name string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	tool := s.srv.GetTool(name)
+	if tool == nil {
+		names := make([]string, 0, len(s.srv.ListTools()))
+		for toolName := range s.srv.ListTools() {
+			names = append(names, toolName)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("unknown tool %q (available: %s)", name, strings.Join(names, ", "))
+	}
+
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+
+	request := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      name,
+			Arguments: args,
+		},
+	}
+
+	return tool.Handler(ctx, request)
 }

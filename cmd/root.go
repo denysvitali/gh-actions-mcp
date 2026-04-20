@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,8 +12,9 @@ import (
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
-	"github.com/denysvitali/gh-actions-mcp/mcp"
+	appmcp "github.com/denysvitali/gh-actions-mcp/mcp"
 
+	mcptypes "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -41,6 +44,8 @@ var (
 	logsRepo      string
 )
 
+var toolArgsJSON string
+
 var log = logrus.New()
 
 func init() {
@@ -60,6 +65,9 @@ func init() {
 
 	// Add logs command
 	rootCmd.AddCommand(logsCmd)
+
+	// Add generic tool command
+	rootCmd.AddCommand(toolCmd)
 }
 
 var rootCmd = &cobra.Command{
@@ -83,12 +91,9 @@ Other configuration:
 - Command line flags (--repo-owner, --repo-name)
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Set log level
-		level, err := logrus.ParseLevel(logLevel)
-		if err != nil {
-			return fmt.Errorf("invalid log level: %w", err)
+		if err := configureLogLevel(); err != nil {
+			return err
 		}
-		log.SetLevel(level)
 
 		// Load config
 		cfg, err := loadConfig()
@@ -97,7 +102,7 @@ Other configuration:
 		}
 
 		// Create MCP server
-		mcpServer := mcp.NewMCPServer(cfg, log)
+		mcpServer := appmcp.NewMCPServer(cfg, log)
 
 		// Run stdio transport using the library's built-in handler
 		return server.ServeStdio(mcpServer.GetServer())
@@ -136,6 +141,14 @@ var inferCmd = &cobra.Command{
 }
 
 func loadConfig() (*config.Config, error) {
+	return loadConfigWithOptions(true)
+}
+
+func loadConfigAllowMissingRepo() (*config.Config, error) {
+	return loadConfigWithOptions(false)
+}
+
+func loadConfigWithOptions(requireRepo bool) (*config.Config, error) {
 	config.SetLogger(log)
 
 	cfg, err := config.Load(cfgFile)
@@ -164,12 +177,33 @@ func loadConfig() (*config.Config, error) {
 		}
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateToken(); err != nil {
 		return nil, err
 	}
+	if requireRepo {
+		if cfg.RepoOwner == "" {
+			return nil, fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
+		}
+		if cfg.RepoName == "" {
+			return nil, fmt.Errorf("repository name is required. Set GH_REPO_NAME env var, 'repo_name' in config, or use --repo-name flag")
+		}
+	}
 
-	log.Infof("Configured for repository: %s/%s", cfg.RepoOwner, cfg.RepoName)
+	if cfg.RepoOwner != "" && cfg.RepoName != "" {
+		log.Infof("Configured for repository: %s/%s", cfg.RepoOwner, cfg.RepoName)
+	} else {
+		log.Infof("Configured without a default repository")
+	}
 	return cfg, nil
+}
+
+func configureLogLevel() error {
+	level, err := logrus.ParseLevel(logLevel)
+	if err != nil {
+		return fmt.Errorf("invalid log level: %w", err)
+	}
+	log.SetLevel(level)
+	return nil
 }
 
 func inferRepoFromGit(cfg *config.Config) error {
@@ -243,6 +277,86 @@ func init() {
 	logsCmd.Flags().Int64VarP(&logsJobID, "job-id", "j", 0, "Specific job ID (when using run ID)")
 	logsCmd.Flags().StringVar(&logsOwner, "owner", "", "Override repo owner")
 	logsCmd.Flags().StringVar(&logsRepo, "repo", "", "Override repo name")
+
+	toolCmd.Flags().StringVar(&toolArgsJSON, "args", "{}", "Tool arguments as a JSON object")
+}
+
+var toolCmd = &cobra.Command{
+	Use:   "tool <tool-name>",
+	Short: "Invoke an MCP tool locally",
+	Long: `Invoke a registered MCP tool locally using a JSON argument object.
+
+Examples:
+  gh-actions-mcp tool list_runs --args '{"owner":"example","repo":"demo","per_page":10}'
+  gh-actions-mcp tool analyze_timing --args '{"owner":"example","repo":"demo","workflow":"CI","limit":10}'`,
+	Args: cobra.ExactArgs(1),
+	RunE: runTool,
+}
+
+func runTool(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := configureLogLevel(); err != nil {
+		return err
+	}
+
+	cfg, err := loadConfigAllowMissingRepo()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	toolArgs := map[string]interface{}{}
+	if strings.TrimSpace(toolArgsJSON) != "" {
+		if err := json.Unmarshal([]byte(toolArgsJSON), &toolArgs); err != nil {
+			return fmt.Errorf("failed to parse --args as JSON object: %w", err)
+		}
+		if toolArgs == nil {
+			toolArgs = map[string]interface{}{}
+		}
+	}
+
+	mcpServer := appmcp.NewMCPServer(cfg, log)
+	result, err := mcpServer.InvokeTool(ctx, args[0], toolArgs)
+	if err != nil {
+		return err
+	}
+
+	if result.IsError {
+		return errors.New(renderToolResult(result))
+	}
+
+	output := renderToolResult(result)
+	if output == "" {
+		return nil
+	}
+	fmt.Println(output)
+	return nil
+}
+
+func renderToolResult(result *mcptypes.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+
+	parts := make([]string, 0, len(result.Content))
+	for _, content := range result.Content {
+		if text, ok := mcptypes.AsTextContent(content); ok {
+			parts = append(parts, text.Text)
+			continue
+		}
+
+		data, err := json.Marshal(content)
+		if err != nil {
+			parts = append(parts, fmt.Sprintf("%v", content))
+			continue
+		}
+		parts = append(parts, string(data))
+	}
+
+	return strings.Join(parts, "\n")
 }
 
 func runLogs(cmd *cobra.Command, args []string) error {

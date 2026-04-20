@@ -156,11 +156,12 @@ Compare the latest or a specific run against recent history, either at the workf
   "name": "analyze_timing",
   "arguments": {
     "workflow": "CI",
-    "branch": "main",
     "limit": 10
   }
 }
 ```
+
+When `branch` is omitted, timing analysis uses recent runs across all branches.
 
 To analyze a specific step within a job:
 
@@ -169,12 +170,20 @@ To analyze a specific step within a job:
   "name": "analyze_timing",
   "arguments": {
     "workflow": "CI",
-    "branch": "main",
     "job_name": "build",
     "step_name": "Unit Tests",
     "limit": 15
   }
 }
+```
+
+### CLI Tool Runner
+
+Invoke MCP tools locally from the CLI with a JSON argument object:
+
+```bash
+gh-actions-mcp tool list_runs --args '{"owner":"example-org","repo":"example-repo","workflow_id":123456,"per_page":10}'
+gh-actions-mcp tool analyze_timing --args '{"owner":"example-org","repo":"example-repo","workflow":"CI","limit":10}'
 ```
 
 ### trigger_workflow
