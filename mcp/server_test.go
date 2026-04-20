@@ -1,14 +1,18 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -304,4 +308,134 @@ func TestRepoFromArgs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "override-owner", owner)
 	assert.Equal(t, "override-repo", repo)
+}
+
+func TestAnalyzeTimingTool(t *testing.T) {
+	const (
+		owner = "test-owner"
+		repo  = "test-repo"
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/workflows", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 1,
+			"workflows": [
+				{"id": 50, "name": "CI", "path": ".github/workflows/ci.yml", "state": "active"}
+			]
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/workflows/50/runs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 2,
+			"workflow_runs": [
+				{
+					"id": 103, "name": "CI", "status": "completed", "conclusion": "success",
+					"head_branch": "main", "head_sha": "sha103", "event": "push",
+					"created_at": "2026-04-20T10:00:00Z", "updated_at": "2026-04-20T10:10:00Z",
+					"run_started_at": "2026-04-20T10:00:00Z", "html_url": "https://example.com/run/103",
+					"run_number": 13, "workflow_id": 50, "actor": {"login": "alice"}
+				},
+				{
+					"id": 102, "name": "CI", "status": "completed", "conclusion": "success",
+					"head_branch": "main", "head_sha": "sha102", "event": "push",
+					"created_at": "2026-04-19T10:00:00Z", "updated_at": "2026-04-19T10:08:00Z",
+					"run_started_at": "2026-04-19T10:00:00Z", "html_url": "https://example.com/run/102",
+					"run_number": 12, "workflow_id": 50, "actor": {"login": "alice"}
+				}
+			]
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/103/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 2,
+			"jobs": [
+				{
+					"id": 203, "name": "build", "status": "completed", "conclusion": "success", "run_id": 103,
+					"started_at": "2026-04-20T10:00:00Z", "completed_at": "2026-04-20T10:05:00Z",
+					"steps": [
+						{"name": "Checkout", "number": 1, "status": "completed", "conclusion": "success", "started_at": "2026-04-20T10:00:00Z", "completed_at": "2026-04-20T10:00:30Z"},
+						{"name": "Unit Tests", "number": 2, "status": "completed", "conclusion": "success", "started_at": "2026-04-20T10:00:30Z", "completed_at": "2026-04-20T10:05:00Z"}
+					]
+				},
+				{
+					"id": 204, "name": "lint", "status": "completed", "conclusion": "success", "run_id": 103,
+					"started_at": "2026-04-20T10:00:00Z", "completed_at": "2026-04-20T10:01:40Z",
+					"steps": [
+						{"name": "golangci-lint", "number": 1, "status": "completed", "conclusion": "success", "started_at": "2026-04-20T10:00:00Z", "completed_at": "2026-04-20T10:01:40Z"}
+					]
+				}
+			]
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/102/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 2,
+			"jobs": [
+				{
+					"id": 202, "name": "build", "status": "completed", "conclusion": "success", "run_id": 102,
+					"started_at": "2026-04-19T10:00:00Z", "completed_at": "2026-04-19T10:04:00Z",
+					"steps": [
+						{"name": "Checkout", "number": 1, "status": "completed", "conclusion": "success", "started_at": "2026-04-19T10:00:00Z", "completed_at": "2026-04-19T10:00:20Z"},
+						{"name": "Unit Tests", "number": 2, "status": "completed", "conclusion": "success", "started_at": "2026-04-19T10:00:20Z", "completed_at": "2026-04-19T10:04:00Z"}
+					]
+				},
+				{
+					"id": 212, "name": "lint", "status": "completed", "conclusion": "success", "run_id": 102,
+					"started_at": "2026-04-19T10:00:00Z", "completed_at": "2026-04-19T10:01:20Z",
+					"steps": [
+						{"name": "golangci-lint", "number": 1, "status": "completed", "conclusion": "success", "started_at": "2026-04-19T10:00:00Z", "completed_at": "2026-04-19T10:01:20Z"}
+					]
+				}
+			]
+		}`))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	cfg := &config.Config{
+		Token:        "token",
+		RepoOwner:    owner,
+		RepoName:     repo,
+		APIBaseURL:   ts.URL + "/",
+		UploadURL:    ts.URL + "/",
+		PerPageLimit: 50,
+	}
+
+	server := NewMCPServer(cfg, logger)
+	request := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "analyze_timing",
+			Arguments: map[string]interface{}{
+				"workflow": "CI",
+				"branch":   "main",
+				"limit":    2,
+			},
+		},
+	}
+
+	result, err := server.analyzeTiming(context.Background(), request)
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	require.Len(t, result.Content, 1)
+
+	text, ok := mcp.AsTextContent(result.Content[0])
+	require.True(t, ok)
+
+	var analysis github.TimingAnalysis
+	err = json.Unmarshal([]byte(text.Text), &analysis)
+	require.NoError(t, err)
+	assert.Equal(t, "workflow", analysis.Scope)
+	assert.Equal(t, int64(50), analysis.WorkflowID)
+	assert.Equal(t, "CI", analysis.WorkflowName)
+	assert.Equal(t, 2, analysis.SampleCount)
+	assert.Equal(t, int64(103), analysis.Focus.RunID)
+	assert.NotEmpty(t, analysis.JobBreakdown)
 }

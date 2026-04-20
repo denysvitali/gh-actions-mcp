@@ -59,7 +59,6 @@ func IsHTTPError(err error, statusCode int) bool {
 	return false
 }
 
-
 // newHTTPErrorFromGitHub creates an HTTPError from a github.Response
 func newHTTPErrorFromGitHub(resp *github.Response, msg string) error {
 	statusCode := 0
@@ -257,6 +256,70 @@ type Job struct {
 	Labels          []string `json:"labels,omitempty"`
 	WorkflowRunID   int64    `json:"workflow_run_id"`
 	Steps           []*Step  `json:"steps,omitempty"`
+}
+
+// TimingAnalysisOptions contains parameters for workflow/job/step timing analysis.
+type TimingAnalysisOptions struct {
+	Workflow   string
+	RunID      int64
+	Branch     string
+	JobName    string
+	StepName   string
+	Limit      int
+	Conclusion string
+}
+
+// TimingStats summarizes durations across a set of runs.
+type TimingStats struct {
+	Count          int     `json:"count"`
+	AverageSeconds float64 `json:"average_seconds"`
+	MedianSeconds  float64 `json:"median_seconds"`
+	MinSeconds     float64 `json:"min_seconds"`
+	MaxSeconds     float64 `json:"max_seconds"`
+}
+
+// TimingSample captures a single workflow/job/step duration in a given run.
+type TimingSample struct {
+	RunID           int64   `json:"run_id"`
+	RunNumber       int     `json:"run_number"`
+	CreatedAt       string  `json:"created_at,omitempty"`
+	Conclusion      string  `json:"conclusion,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds"`
+}
+
+// TimingComparison compares a focus run against recent history.
+type TimingComparison struct {
+	*TimingSample
+	DeltaFromAverageSeconds  float64 `json:"delta_from_average_seconds"`
+	DeltaFromAveragePercent  float64 `json:"delta_from_average_percent"`
+	DeltaFromPreviousSeconds float64 `json:"delta_from_previous_seconds,omitempty"`
+	DeltaFromPreviousPercent float64 `json:"delta_from_previous_percent,omitempty"`
+}
+
+// TimingBreakdownItem highlights a job or step within the focus run.
+type TimingBreakdownItem struct {
+	JobName                 string  `json:"job_name,omitempty"`
+	StepName                string  `json:"step_name,omitempty"`
+	DurationSeconds         float64 `json:"duration_seconds"`
+	AverageDurationSeconds  float64 `json:"average_duration_seconds"`
+	DeltaFromAverageSeconds float64 `json:"delta_from_average_seconds"`
+	DeltaFromAveragePercent float64 `json:"delta_from_average_percent"`
+}
+
+// TimingAnalysis is the full result of comparing workflow/job/step timings.
+type TimingAnalysis struct {
+	Scope         string                 `json:"scope"`
+	WorkflowID    int64                  `json:"workflow_id"`
+	WorkflowName  string                 `json:"workflow_name"`
+	Branch        string                 `json:"branch,omitempty"`
+	JobName       string                 `json:"job_name,omitempty"`
+	StepName      string                 `json:"step_name,omitempty"`
+	SampleCount   int                    `json:"sample_count"`
+	Statistics    *TimingStats           `json:"statistics"`
+	Focus         *TimingComparison      `json:"focus"`
+	RecentSamples []*TimingSample        `json:"recent_samples"`
+	JobBreakdown  []*TimingBreakdownItem `json:"job_breakdown,omitempty"`
+	StepBreakdown []*TimingBreakdownItem `json:"step_breakdown,omitempty"`
 }
 
 // Artifact represents a workflow run artifact
@@ -1307,6 +1370,500 @@ func (c *Client) GetWorkflowJobs(ctx context.Context, runID int64, filter string
 	return result, nil
 }
 
+// AnalyzeTiming compares workflow, job, or step durations across recent runs.
+func (c *Client) AnalyzeTiming(ctx context.Context, opts *TimingAnalysisOptions) (*TimingAnalysis, error) {
+	if opts == nil {
+		return nil, fmt.Errorf("timing analysis options are required")
+	}
+	if opts.StepName != "" && opts.JobName == "" {
+		return nil, fmt.Errorf("job_name is required when step_name is provided")
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	scope := "workflow"
+	if opts.StepName != "" {
+		scope = "step"
+	} else if opts.JobName != "" {
+		scope = "job"
+	}
+
+	var (
+		focusRun     *WorkflowRun
+		workflowID   int64
+		workflowName string
+		err          error
+	)
+
+	workflowSelector := strings.TrimSpace(opts.Workflow)
+	if opts.RunID > 0 {
+		focusRun, err = c.GetWorkflowRun(ctx, opts.RunID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get workflow run %d: %w", opts.RunID, err)
+		}
+		if focusRun.Status != "completed" {
+			return nil, fmt.Errorf("workflow run %d is %s; timing analysis requires a completed run", opts.RunID, focusRun.Status)
+		}
+		if workflowSelector != "" {
+			workflowID, workflowName, err = c.ResolveWorkflowID(ctx, workflowSelector)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve workflow %q: %w", workflowSelector, err)
+			}
+			if workflowID != focusRun.WorkflowID {
+				return nil, fmt.Errorf("run %d belongs to workflow %q (%d), not %q (%d)", opts.RunID, focusRun.Name, focusRun.WorkflowID, workflowName, workflowID)
+			}
+		} else {
+			workflowID = focusRun.WorkflowID
+			workflowName = focusRun.Name
+		}
+		if opts.Branch == "" {
+			opts.Branch = focusRun.Branch
+		}
+		if opts.Conclusion != "" && focusRun.Conclusion != opts.Conclusion {
+			return nil, fmt.Errorf("run %d concluded as %s, which does not match conclusion filter %q", opts.RunID, focusRun.Conclusion, opts.Conclusion)
+		}
+	} else {
+		if workflowSelector == "" {
+			return nil, fmt.Errorf("workflow is required when run_id is not provided")
+		}
+		workflowID, workflowName, err = c.ResolveWorkflowID(ctx, workflowSelector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve workflow %q: %w", workflowSelector, err)
+		}
+	}
+
+	runs, err := c.listWorkflowRunsForTiming(ctx, workflowID, opts.Branch, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	filteredRuns := make([]*WorkflowRun, 0, len(runs)+1)
+	for _, run := range runs {
+		if !matchesTimingRun(run, opts.Conclusion) {
+			continue
+		}
+		filteredRuns = append(filteredRuns, run)
+	}
+	if focusRun != nil && matchesTimingRun(focusRun, opts.Conclusion) {
+		filteredRuns = appendTimingRunIfMissing(filteredRuns, focusRun)
+	}
+
+	sort.Slice(filteredRuns, func(i, j int) bool {
+		return filteredRuns[i].RunNumber > filteredRuns[j].RunNumber
+	})
+	filteredRuns = limitTimingRuns(filteredRuns, limit, opts.RunID)
+
+	if len(filteredRuns) == 0 {
+		return nil, fmt.Errorf("no completed runs with timing data found for workflow %q", workflowName)
+	}
+
+	if focusRun == nil {
+		focusRun = filteredRuns[0]
+	}
+
+	jobsByRun := make(map[int64][]*Job, len(filteredRuns))
+	for _, run := range filteredRuns {
+		jobs, err := c.GetWorkflowJobs(ctx, run.ID, "", 0)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get jobs for run %d: %w", run.ID, err)
+		}
+		jobsByRun[run.ID] = jobs
+	}
+
+	samples := make([]*TimingSample, 0, len(filteredRuns))
+	for _, run := range filteredRuns {
+		sample, err := timingSampleForScope(run, jobsByRun[run.ID], scope, opts.JobName, opts.StepName)
+		if err != nil {
+			return nil, err
+		}
+		if sample != nil {
+			samples = append(samples, sample)
+		}
+	}
+
+	if len(samples) == 0 {
+		return nil, fmt.Errorf("no timing samples matched scope %q for workflow %q", scope, workflowName)
+	}
+
+	focusIndex := indexOfTimingSample(samples, focusRun.ID)
+	if focusIndex == -1 {
+		return nil, fmt.Errorf("run %d does not include the requested %s", focusRun.ID, scope)
+	}
+
+	baselineSamples := samplesExcludingIndex(samples, focusIndex)
+	if len(baselineSamples) == 0 {
+		baselineSamples = samples
+	}
+
+	analysis := &TimingAnalysis{
+		Scope:         scope,
+		WorkflowID:    workflowID,
+		WorkflowName:  workflowName,
+		Branch:        opts.Branch,
+		JobName:       opts.JobName,
+		StepName:      opts.StepName,
+		SampleCount:   len(samples),
+		Statistics:    timingStatsFromSamples(samples),
+		Focus:         compareTimingSample(samples[focusIndex], timingStatsFromSamples(baselineSamples), previousTimingSample(samples, focusIndex)),
+		RecentSamples: samples,
+	}
+
+	switch scope {
+	case "workflow":
+		analysis.JobBreakdown = buildJobBreakdown(jobsByRun, focusRun.ID)
+		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRun.ID, opts.JobName)
+	case "job":
+		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRun.ID, opts.JobName)
+	}
+
+	return analysis, nil
+}
+
+func (c *Client) listWorkflowRunsForTiming(ctx context.Context, workflowID int64, branch string, limit int) ([]*WorkflowRun, error) {
+	perPage := c.perPageLimit
+	target := limit * 3
+	if target < 20 {
+		target = 20
+	}
+	if perPage < target {
+		perPage = target
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	if perPage <= 0 {
+		perPage = 50
+	}
+
+	opts := &github.ListWorkflowRunsOptions{
+		ListOptions: github.ListOptions{PerPage: perPage},
+	}
+	if branch != "" {
+		opts.Branch = branch
+	}
+
+	runs, _, err := c.gh.Actions.ListWorkflowRunsByID(ctx, c.owner, c.repo, workflowID, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workflow runs for workflow %d: %w", workflowID, err)
+	}
+
+	result := make([]*WorkflowRun, 0, len(runs.WorkflowRuns))
+	for _, run := range runs.WorkflowRuns {
+		result = append(result, workflowRunFromGitHub(run))
+	}
+	return result, nil
+}
+
+func matchesTimingRun(run *WorkflowRun, conclusion string) bool {
+	if run == nil || run.Status != "completed" || run.DurationSeconds <= 0 {
+		return false
+	}
+	if conclusion != "" && run.Conclusion != conclusion {
+		return false
+	}
+	return true
+}
+
+func appendTimingRunIfMissing(runs []*WorkflowRun, focus *WorkflowRun) []*WorkflowRun {
+	for _, run := range runs {
+		if run.ID == focus.ID {
+			return runs
+		}
+	}
+	return append(runs, focus)
+}
+
+func limitTimingRuns(runs []*WorkflowRun, limit int, focusRunID int64) []*WorkflowRun {
+	if limit <= 0 || len(runs) <= limit {
+		return runs
+	}
+	if focusRunID == 0 {
+		return runs[:limit]
+	}
+
+	focusIndex := -1
+	for i, run := range runs {
+		if run.ID == focusRunID {
+			focusIndex = i
+			break
+		}
+	}
+	if focusIndex == -1 || focusIndex < limit {
+		return runs[:limit]
+	}
+
+	limited := append([]*WorkflowRun{}, runs[:limit-1]...)
+	limited = append(limited, runs[focusIndex])
+	sort.Slice(limited, func(i, j int) bool {
+		return limited[i].RunNumber > limited[j].RunNumber
+	})
+	return limited
+}
+
+func timingSampleForScope(run *WorkflowRun, jobs []*Job, scope, jobName, stepName string) (*TimingSample, error) {
+	switch scope {
+	case "workflow":
+		return newTimingSample(run, run.DurationSeconds), nil
+	case "job":
+		job := findJobByName(jobs, jobName)
+		if job == nil {
+			return nil, nil
+		}
+		if job.DurationSeconds <= 0 {
+			return nil, nil
+		}
+		return newTimingSample(run, job.DurationSeconds), nil
+	case "step":
+		job := findJobByName(jobs, jobName)
+		if job == nil {
+			return nil, nil
+		}
+		step := findStepByName(job.Steps, stepName)
+		if step == nil || step.DurationSeconds <= 0 {
+			return nil, nil
+		}
+		return newTimingSample(run, step.DurationSeconds), nil
+	default:
+		return nil, fmt.Errorf("unknown timing scope %q", scope)
+	}
+}
+
+func newTimingSample(run *WorkflowRun, duration float64) *TimingSample {
+	return &TimingSample{
+		RunID:           run.ID,
+		RunNumber:       run.RunNumber,
+		CreatedAt:       run.CreatedAt,
+		Conclusion:      run.Conclusion,
+		DurationSeconds: duration,
+	}
+}
+
+func findJobByName(jobs []*Job, name string) *Job {
+	normalized := normalizeTimingName(name)
+	for _, job := range jobs {
+		if normalizeTimingName(job.Name) == normalized {
+			return job
+		}
+	}
+	return nil
+}
+
+func findStepByName(steps []*Step, name string) *Step {
+	normalized := normalizeTimingName(name)
+	for _, step := range steps {
+		if normalizeTimingName(step.Name) == normalized {
+			return step
+		}
+	}
+	return nil
+}
+
+func normalizeTimingName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func indexOfTimingSample(samples []*TimingSample, runID int64) int {
+	for i, sample := range samples {
+		if sample.RunID == runID {
+			return i
+		}
+	}
+	return -1
+}
+
+func samplesExcludingIndex(samples []*TimingSample, exclude int) []*TimingSample {
+	if exclude < 0 || exclude >= len(samples) {
+		return samples
+	}
+	result := make([]*TimingSample, 0, len(samples)-1)
+	for i, sample := range samples {
+		if i == exclude {
+			continue
+		}
+		result = append(result, sample)
+	}
+	return result
+}
+
+func previousTimingSample(samples []*TimingSample, focusIndex int) *TimingSample {
+	if focusIndex < 0 || focusIndex+1 >= len(samples) {
+		return nil
+	}
+	return samples[focusIndex+1]
+}
+
+func timingStatsFromSamples(samples []*TimingSample) *TimingStats {
+	if len(samples) == 0 {
+		return &TimingStats{}
+	}
+
+	durations := make([]float64, 0, len(samples))
+	for _, sample := range samples {
+		durations = append(durations, sample.DurationSeconds)
+	}
+	sort.Float64s(durations)
+
+	var total float64
+	for _, duration := range durations {
+		total += duration
+	}
+
+	median := durations[len(durations)/2]
+	if len(durations)%2 == 0 {
+		middle := len(durations) / 2
+		median = (durations[middle-1] + durations[middle]) / 2
+	}
+
+	return &TimingStats{
+		Count:          len(durations),
+		AverageSeconds: total / float64(len(durations)),
+		MedianSeconds:  median,
+		MinSeconds:     durations[0],
+		MaxSeconds:     durations[len(durations)-1],
+	}
+}
+
+func compareTimingSample(sample *TimingSample, baseline *TimingStats, previous *TimingSample) *TimingComparison {
+	comparison := &TimingComparison{
+		TimingSample:            sample,
+		DeltaFromAverageSeconds: sample.DurationSeconds - baseline.AverageSeconds,
+		DeltaFromAveragePercent: deltaPercent(sample.DurationSeconds-baseline.AverageSeconds, baseline.AverageSeconds),
+	}
+	if previous != nil {
+		comparison.DeltaFromPreviousSeconds = sample.DurationSeconds - previous.DurationSeconds
+		comparison.DeltaFromPreviousPercent = deltaPercent(sample.DurationSeconds-previous.DurationSeconds, previous.DurationSeconds)
+	}
+	return comparison
+}
+
+func deltaPercent(delta, baseline float64) float64 {
+	if baseline == 0 {
+		return 0
+	}
+	return (delta / baseline) * 100
+}
+
+type stepBreakdownKey struct {
+	JobName  string
+	StepName string
+}
+
+func buildJobBreakdown(jobsByRun map[int64][]*Job, focusRunID int64) []*TimingBreakdownItem {
+	focusJobs := jobsByRun[focusRunID]
+	baseline := make(map[string][]float64)
+	for runID, jobs := range jobsByRun {
+		if runID == focusRunID {
+			continue
+		}
+		for _, job := range jobs {
+			if job.DurationSeconds <= 0 {
+				continue
+			}
+			key := normalizeTimingName(job.Name)
+			baseline[key] = append(baseline[key], job.DurationSeconds)
+		}
+	}
+
+	items := make([]*TimingBreakdownItem, 0, len(focusJobs))
+	for _, job := range focusJobs {
+		if job.DurationSeconds <= 0 {
+			continue
+		}
+		stats := timingStatsFromDurations(baseline[normalizeTimingName(job.Name)])
+		delta := job.DurationSeconds - stats.AverageSeconds
+		items = append(items, &TimingBreakdownItem{
+			JobName:                 job.Name,
+			DurationSeconds:         job.DurationSeconds,
+			AverageDurationSeconds:  stats.AverageSeconds,
+			DeltaFromAverageSeconds: delta,
+			DeltaFromAveragePercent: deltaPercent(delta, stats.AverageSeconds),
+		})
+	}
+	sortTimingBreakdown(items)
+	return limitTimingBreakdown(items, 10)
+}
+
+func buildStepBreakdown(jobsByRun map[int64][]*Job, focusRunID int64, jobName string) []*TimingBreakdownItem {
+	focusJobs := jobsByRun[focusRunID]
+	baseline := make(map[stepBreakdownKey][]float64)
+	normalizedJobName := normalizeTimingName(jobName)
+	for runID, jobs := range jobsByRun {
+		if runID == focusRunID {
+			continue
+		}
+		for _, job := range jobs {
+			if normalizedJobName != "" && normalizeTimingName(job.Name) != normalizedJobName {
+				continue
+			}
+			for _, step := range job.Steps {
+				if step.DurationSeconds <= 0 {
+					continue
+				}
+				key := stepBreakdownKey{
+					JobName:  normalizeTimingName(job.Name),
+					StepName: normalizeTimingName(step.Name),
+				}
+				baseline[key] = append(baseline[key], step.DurationSeconds)
+			}
+		}
+	}
+
+	items := make([]*TimingBreakdownItem, 0)
+	for _, job := range focusJobs {
+		if normalizedJobName != "" && normalizeTimingName(job.Name) != normalizedJobName {
+			continue
+		}
+		for _, step := range job.Steps {
+			if step.DurationSeconds <= 0 {
+				continue
+			}
+			key := stepBreakdownKey{
+				JobName:  normalizeTimingName(job.Name),
+				StepName: normalizeTimingName(step.Name),
+			}
+			stats := timingStatsFromDurations(baseline[key])
+			delta := step.DurationSeconds - stats.AverageSeconds
+			items = append(items, &TimingBreakdownItem{
+				JobName:                 job.Name,
+				StepName:                step.Name,
+				DurationSeconds:         step.DurationSeconds,
+				AverageDurationSeconds:  stats.AverageSeconds,
+				DeltaFromAverageSeconds: delta,
+				DeltaFromAveragePercent: deltaPercent(delta, stats.AverageSeconds),
+			})
+		}
+	}
+	sortTimingBreakdown(items)
+	return limitTimingBreakdown(items, 10)
+}
+
+func timingStatsFromDurations(durations []float64) *TimingStats {
+	samples := make([]*TimingSample, 0, len(durations))
+	for _, duration := range durations {
+		samples = append(samples, &TimingSample{DurationSeconds: duration})
+	}
+	return timingStatsFromSamples(samples)
+}
+
+func sortTimingBreakdown(items []*TimingBreakdownItem) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].DeltaFromAverageSeconds == items[j].DeltaFromAverageSeconds {
+			return items[i].DurationSeconds > items[j].DurationSeconds
+		}
+		return items[i].DeltaFromAverageSeconds > items[j].DeltaFromAverageSeconds
+	})
+}
+
+func limitTimingBreakdown(items []*TimingBreakdownItem, limit int) []*TimingBreakdownItem {
+	if len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
 // GetWorkflowJobLogs retrieves logs for a specific job
 func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
 	// Get the log archive
@@ -2311,15 +2868,15 @@ func extractSectionName(line, marker string) string {
 
 // FailureDiagnosis is the top-level result of diagnosing a failed workflow run
 type FailureDiagnosis struct {
-	RunID       int64          `json:"run_id"`
-	RunName     string         `json:"run_name"`
-	RunURL      string         `json:"run_url"`
-	Branch      string         `json:"branch"`
-	HeadSHA     string         `json:"head_sha"`
-	Conclusion  string         `json:"conclusion"`
-	FailedJobs  []*FailedJob   `json:"failed_jobs"`
-	Flakiness   *FlakinessInfo `json:"flakiness,omitempty"`
-	Summary     string         `json:"summary"`
+	RunID      int64          `json:"run_id"`
+	RunName    string         `json:"run_name"`
+	RunURL     string         `json:"run_url"`
+	Branch     string         `json:"branch"`
+	HeadSHA    string         `json:"head_sha"`
+	Conclusion string         `json:"conclusion"`
+	FailedJobs []*FailedJob   `json:"failed_jobs"`
+	Flakiness  *FlakinessInfo `json:"flakiness,omitempty"`
+	Summary    string         `json:"summary"`
 }
 
 // FailedJob represents a job that failed within a workflow run
@@ -2355,12 +2912,12 @@ var errorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^.*panic[:\s].*`),
 	regexp.MustCompile(`(?i)^.*exception[:\s].*`),
 	regexp.MustCompile(`(?i)^.*traceback.*`),
-	regexp.MustCompile(`(?i)^E\s+\w+`),                // pytest-style "E   AssertionError"
-	regexp.MustCompile(`--- FAIL:`),                     // Go test failures
-	regexp.MustCompile(`(?i)exit code [1-9]`),           // non-zero exit codes
+	regexp.MustCompile(`(?i)^E\s+\w+`),        // pytest-style "E   AssertionError"
+	regexp.MustCompile(`--- FAIL:`),           // Go test failures
+	regexp.MustCompile(`(?i)exit code [1-9]`), // non-zero exit codes
 	regexp.MustCompile(`(?i)command.*failed`),
 	regexp.MustCompile(`(?i)process completed with exit code [1-9]`),
-	regexp.MustCompile(`##\[error\]`),                   // GitHub Actions error annotations
+	regexp.MustCompile(`##\[error\]`), // GitHub Actions error annotations
 }
 
 // DiagnoseFailure performs a comprehensive diagnosis of a failed workflow run.
