@@ -146,6 +146,22 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestConfig_ValidateToken(t *testing.T) {
+	originalProvider := keychainTokenProvider
+	keychainTokenProvider = func() (string, error) {
+		return "", errors.New("no token in test keychain")
+	}
+	t.Cleanup(func() {
+		keychainTokenProvider = originalProvider
+	})
+
+	cfg := Config{Token: "token"}
+	require.NoError(t, cfg.ValidateToken())
+
+	cfg.Token = ""
+	require.Error(t, cfg.ValidateToken())
+}
+
 func TestConfig_Validate_UsesKeychainProvider(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("keychain provider is only used on macOS")

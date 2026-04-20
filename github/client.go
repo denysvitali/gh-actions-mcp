@@ -1419,9 +1419,6 @@ func (c *Client) AnalyzeTiming(ctx context.Context, opts *TimingAnalysisOptions)
 			workflowID = focusRun.WorkflowID
 			workflowName = focusRun.Name
 		}
-		if opts.Branch == "" {
-			opts.Branch = focusRun.Branch
-		}
 		if opts.Conclusion != "" && focusRun.Conclusion != opts.Conclusion {
 			return nil, fmt.Errorf("run %d concluded as %s, which does not match conclusion filter %q", opts.RunID, focusRun.Conclusion, opts.Conclusion)
 		}
