@@ -160,7 +160,6 @@ func (s *MCPServer) getLogLines() int {
 	return DefaultLogLines
 }
 
-
 func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string {
 	errStr := ""
 	if err != nil {
@@ -435,6 +434,39 @@ func (s *MCPServer) registerTools() {
 			mcp.DefaultString("compact"),
 		),
 	), s.getRun)
+
+	// Tool: analyze_timing
+	s.srv.AddTool(mcp.NewTool("analyze_timing",
+		mcp.WithDescription("Analyze workflow, job, or step durations across recent runs to compare a specific CI run against recent history and surface slow spots."),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
+		mcp.WithString("workflow",
+			mcp.Description("Workflow selector (name, path, or numeric ID). Required unless run_id is provided."),
+		),
+		mcp.WithNumber("run_id",
+			mcp.Description("Optional: focus on a specific workflow run ID. When omitted, the latest matching run is used."),
+		),
+		mcp.WithString("branch",
+			mcp.Description("Optional: branch to compare against. Defaults to the focus run branch or the current git branch for the configured repository."),
+		),
+		mcp.WithString("job_name",
+			mcp.Description("Optional: analyze a specific job across runs. Required when step_name is provided."),
+		),
+		mcp.WithString("step_name",
+			mcp.Description("Optional: analyze a specific step within job_name across runs."),
+		),
+		mcp.WithString("conclusion",
+			mcp.Description("Optional: only include runs with a specific conclusion (success, failure, cancelled, etc.)."),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of recent runs to analyze (default: 10, max: 50)."),
+			mcp.DefaultNumber(10),
+		),
+	), s.analyzeTiming)
 
 	// Tool: get_check_status
 	s.srv.AddTool(mcp.NewTool("get_check_status",
@@ -1140,6 +1172,81 @@ func (s *MCPServer) getLogSections(ctx context.Context, client *github.Client, o
 		return jsonResultPretty(sections)
 	}
 	return jsonResult(sections)
+}
+
+func (s *MCPServer) analyzeTiming(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := request.GetArguments()
+	client, owner, repo, err := s.clientFromArgs(args)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+
+	workflow := ""
+	if value, ok := args["workflow"].(string); ok {
+		workflow = strings.TrimSpace(value)
+	}
+
+	runID := int64(0)
+	if value, ok := args["run_id"].(float64); ok && value > 0 {
+		runID = int64(value)
+	}
+
+	jobName := ""
+	if value, ok := args["job_name"].(string); ok {
+		jobName = strings.TrimSpace(value)
+	}
+
+	stepName := ""
+	if value, ok := args["step_name"].(string); ok {
+		stepName = strings.TrimSpace(value)
+	}
+
+	if stepName != "" && jobName == "" {
+		return errorResult("job_name is required when step_name is provided"), nil
+	}
+	if workflow == "" && runID == 0 {
+		return errorResult("workflow or run_id is required"), nil
+	}
+
+	branch := ""
+	if value, ok := args["branch"].(string); ok && value != "" {
+		branch = strings.TrimSpace(value)
+	} else if runID == 0 && owner == s.config.RepoOwner && repo == s.config.RepoName {
+		if detectedBranch, err := github.GetCurrentBranch(); err == nil {
+			branch = detectedBranch
+			s.log.Debugf("Auto-detected branch for timing analysis: %s", branch)
+		}
+	}
+
+	conclusion := ""
+	if value, ok := args["conclusion"].(string); ok {
+		conclusion = strings.TrimSpace(value)
+	}
+
+	limit := 10
+	if value, ok := args["limit"].(float64); ok && value > 0 {
+		limit = int(value)
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	s.log.Infof("Analyzing timing for %s/%s (workflow=%q, run_id=%d, job=%q, step=%q, limit=%d)", owner, repo, workflow, runID, jobName, stepName, limit)
+
+	analysis, err := client.AnalyzeTiming(ctx, &github.TimingAnalysisOptions{
+		Workflow:   workflow,
+		RunID:      runID,
+		Branch:     branch,
+		JobName:    jobName,
+		StepName:   stepName,
+		Limit:      limit,
+		Conclusion: conclusion,
+	})
+	if err != nil {
+		return errorResult(s.formatAuthErrorForRepo(err, "failed to analyze timing", owner, repo)), nil
+	}
+
+	return jsonResultPretty(analysis)
 }
 
 func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

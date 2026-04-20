@@ -7,6 +7,7 @@ A Model Context Protocol (MCP) server for interacting with GitHub Actions. Provi
 - **Get Actions Status**: View current status of GitHub Actions including recent workflow runs and statistics
 - **List Workflows**: View all workflows available in the repository
 - **Get Workflow Runs**: Get recent runs for a specific workflow
+- **Analyze Timing**: Compare workflow, job, and step durations across recent runs to spot regressions and slow steps
 - **Trigger Workflow**: Manually trigger a workflow to run
 - **Cancel Workflow Run**: Cancel a running workflow
 - **Rerun Workflow**: Rerun a failed workflow
@@ -142,6 +143,36 @@ Get recent runs for a specific workflow.
   "arguments": {
     "workflow_id": "CI",
     "limit": 10
+  }
+}
+```
+
+### analyze_timing
+
+Compare the latest or a specific run against recent history, either at the workflow level or for a named job/step.
+
+```json
+{
+  "name": "analyze_timing",
+  "arguments": {
+    "workflow": "CI",
+    "branch": "main",
+    "limit": 10
+  }
+}
+```
+
+To analyze a specific step within a job:
+
+```json
+{
+  "name": "analyze_timing",
+  "arguments": {
+    "workflow": "CI",
+    "branch": "main",
+    "job_name": "build",
+    "step_name": "Unit Tests",
+    "limit": 15
   }
 }
 ```

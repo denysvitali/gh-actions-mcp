@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -82,6 +83,14 @@ func TestLoad_DefaultValues(t *testing.T) {
 }
 
 func TestConfig_Validate(t *testing.T) {
+	originalProvider := keychainTokenProvider
+	keychainTokenProvider = func() (string, error) {
+		return "", errors.New("no token in test keychain")
+	}
+	t.Cleanup(func() {
+		keychainTokenProvider = originalProvider
+	})
+
 	tests := []struct {
 		name      string
 		cfg       Config
@@ -135,6 +144,29 @@ func TestConfig_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfig_Validate_UsesKeychainProvider(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain provider is only used on macOS")
+	}
+
+	originalProvider := keychainTokenProvider
+	keychainTokenProvider = func() (string, error) {
+		return "gho_test-from-keychain", nil
+	}
+	t.Cleanup(func() {
+		keychainTokenProvider = originalProvider
+	})
+
+	cfg := Config{
+		RepoOwner: "owner",
+		RepoName:  "repo",
+	}
+
+	err := cfg.Validate()
+	require.NoError(t, err)
+	assert.Equal(t, "gho_test-from-keychain", cfg.Token)
 }
 
 func TestLoad_FileNotFound(t *testing.T) {

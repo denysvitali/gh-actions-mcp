@@ -28,6 +28,7 @@ type Config struct {
 }
 
 var log = logrus.New()
+var keychainTokenProvider = getTokenFromKeychain
 
 func SetLogger(l *logrus.Logger) {
 	log = l
@@ -100,7 +101,7 @@ func (c *Config) Validate() error {
 	if c.Token == "" {
 		// Try to get token from macOS keychain (only on macOS)
 		if runtime.GOOS == "darwin" {
-			if token, err := getTokenFromKeychain(); err == nil {
+			if token, err := keychainTokenProvider(); err == nil {
 				c.Token = token
 				log.Infof("Obtained GitHub token from macOS keychain")
 			} else {
