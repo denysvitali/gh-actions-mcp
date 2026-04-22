@@ -113,6 +113,15 @@ func (s *MCPServer) repoFromArgs(args map[string]interface{}) (string, string, e
 		repo = strings.TrimSpace(v)
 	}
 
+	// Handle repo="owner/repo" format by splitting into owner and repo
+	if strings.Contains(repo, "/") {
+		parts := strings.SplitN(repo, "/", 2)
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			owner = parts[0]
+			repo = parts[1]
+		}
+	}
+
 	if owner == "" || repo == "" {
 		return "", "", fmt.Errorf("repository owner/repo not set. Provide owner and repo arguments")
 	}
