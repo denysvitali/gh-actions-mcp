@@ -1080,6 +1080,70 @@ func TestGetWorkflowJobLogs_RedirectZipStillWorks(t *testing.T) {
 	assert.Contains(t, logs, "zip-line-2")
 }
 
+func TestGetWorkflowJobLogsFromRunArchive_FiltersJobFolder(t *testing.T) {
+	const (
+		owner = "example-owner"
+		repo  = "example-repo"
+		runID = int64(100)
+		jobID = int64(12345)
+	)
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	f, err := zw.Create("Lint/system.txt")
+	require.NoError(t, err)
+	_, err = io.WriteString(f, "lint-system-line\n")
+	require.NoError(t, err)
+	f, err = zw.Create("Test/system.txt")
+	require.NoError(t, err)
+	_, err = io.WriteString(f, "test-system-line\n")
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	mux := http.NewServeMux()
+	redirectBase := ""
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/100/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"total_count": 2,
+			"jobs": [
+				{"id": 12345, "name": "Lint", "status": "completed", "conclusion": "failure", "run_id": 100},
+				{"id": 67890, "name": "Test", "status": "completed", "conclusion": "failure", "run_id": 100}
+			]
+		}`))
+	})
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs/100/logs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", redirectBase+"/blob/run.zip")
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/blob/run.zip", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(zipBuf.Bytes())
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	redirectBase = ts.URL
+
+	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
+	baseURL, err := url.Parse(ts.URL + "/")
+	require.NoError(t, err)
+	ghc.BaseURL = baseURL
+
+	client := &Client{
+		owner:        owner,
+		repo:         repo,
+		gh:           ghc,
+		perPageLimit: 50,
+	}
+
+	logs, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), runID, jobID, 0, 0, 0, false, nil)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "=== Lint/system.txt ===")
+	assert.Contains(t, logs, "lint-system-line")
+	assert.NotContains(t, logs, "test-system-line")
+}
+
 func TestGetCheckRunsForRef_UsesWorkflowRunsNotChecksAPI(t *testing.T) {
 	const (
 		owner = "example-owner"

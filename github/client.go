@@ -965,6 +965,61 @@ func readZipArchive(zipURL string, httpClient *http.Client) ([]logFile, int64, e
 	return logFiles, contentLength, nil
 }
 
+func formatLogFiles(logFiles []logFile, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+	sort.Slice(logFiles, func(i, j int) bool {
+		return logFiles[i].name < logFiles[j].name
+	})
+
+	var allLogs strings.Builder
+	for _, lf := range logFiles {
+		if !noHeaders {
+			allLogs.WriteString(fmt.Sprintf("=== %s ===\n", lf.name))
+		}
+		allLogs.WriteString(lf.data)
+		if !strings.HasSuffix(lf.data, "\n") {
+			allLogs.WriteString("\n")
+		}
+	}
+
+	logStr := strings.TrimRight(allLogs.String(), "\n")
+
+	if filterOpts != nil && (filterOpts.Filter != "" || filterOpts.FilterRegex != "") {
+		parsedLines := parseLogLines(logStr)
+		filteredLines, err := filterLogLines(parsedLines, filterOpts)
+		if err != nil {
+			return "", err
+		}
+		if filteredLines == nil {
+			return "", nil
+		}
+		logStr = linesToString(filteredLines)
+	}
+
+	lines := strings.Split(logStr, "\n")
+	if offset > 0 {
+		if offset >= len(lines) {
+			lines = nil
+		} else {
+			lines = lines[offset:]
+		}
+	}
+
+	if tail > 0 {
+		if len(lines) > tail {
+			lines = lines[len(lines)-tail:]
+		}
+	} else if head > 0 && len(lines) > head {
+		lines = lines[:head]
+	}
+
+	logStr = strings.Join(lines, "\n")
+	if logStr != "" {
+		logStr += "\n"
+	}
+
+	return logStr, nil
+}
+
 // GetWorkflowLogFiles returns a list of log files available in the workflow run archive
 func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFileInfo, error) {
 	// Get the log archive URL
@@ -1032,61 +1087,7 @@ func (c *Client) GetWorkflowLogsWithPattern(ctx context.Context, runID int64, he
 		logFiles = filtered
 	}
 
-	// Combine all logs into a single string with optional headers
-	var allLogs strings.Builder
-	for _, lf := range logFiles {
-		// Add a header for each file unless noHeaders is true
-		if !noHeaders {
-			allLogs.WriteString(fmt.Sprintf("=== %s ===\n", lf.name))
-		}
-		allLogs.WriteString(lf.data)
-		// Add newline if the file doesn't end with one
-		if !strings.HasSuffix(lf.data, "\n") {
-			allLogs.WriteString("\n")
-		}
-	}
-
-	logStr := strings.TrimRight(allLogs.String(), "\n")
-
-	// Apply filtering if specified
-	if filterOpts != nil && (filterOpts.Filter != "" || filterOpts.FilterRegex != "") {
-		parsedLines := parseLogLines(logStr)
-		filteredLines, err := filterLogLines(parsedLines, filterOpts)
-		if err != nil {
-			return "", err
-		}
-		if filteredLines == nil {
-			return "", nil // No matches - return empty string
-		}
-		logStr = linesToString(filteredLines)
-	}
-
-	// Apply line limiting (offset, head, tail)
-	lines := strings.Split(logStr, "\n")
-
-	// Apply offset first (skip lines from the beginning)
-	if offset > 0 && offset < len(lines) {
-		lines = lines[offset:]
-	}
-
-	// Apply tail (last N lines - takes precedence over head)
-	if tail > 0 {
-		if len(lines) > tail {
-			lines = lines[len(lines)-tail:]
-		}
-	} else if head > 0 {
-		// Apply head (at most N lines)
-		if len(lines) > head {
-			lines = lines[:head]
-		}
-	}
-
-	logStr = strings.Join(lines, "\n")
-	if logStr != "" {
-		logStr = logStr + "\n"
-	}
-
-	return logStr, nil
+	return formatLogFiles(logFiles, head, tail, offset, noHeaders, filterOpts)
 }
 
 // GetWorkflowLogs retrieves the logs for a workflow run and returns them as a string.
@@ -1940,64 +1941,57 @@ func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail
 		})
 	}
 
-	// Sort by filename
-	sort.Slice(logFiles, func(i, j int) bool {
-		return logFiles[i].name < logFiles[j].name
-	})
+	return formatLogFiles(logFiles, head, tail, offset, noHeaders, filterOpts)
+}
 
-	// Combine all logs
-	var allLogs strings.Builder
+// GetWorkflowJobLogsFromRunArchive retrieves logs for a job from the workflow
+// run log archive. This is a fallback for cases where GitHub's job log endpoint
+// returns 404 but the run-level log archive still contains the job's system logs.
+func (c *Client) GetWorkflowJobLogsFromRunArchive(ctx context.Context, runID, jobID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+	jobs, err := c.GetWorkflowJobs(ctx, runID, "", 0)
+	if err != nil {
+		return "", err
+	}
+
+	var jobName string
+	for _, job := range jobs {
+		if job.ID == jobID {
+			jobName = job.Name
+			break
+		}
+	}
+	if jobName == "" {
+		return "", fmt.Errorf("job %d not found in run %d", jobID, runID)
+	}
+
+	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, maxRedirects)
+	if err != nil {
+		return "", fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
+	}
+
+	if resp != nil && resp.StatusCode != 0 {
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+			return "", newHTTPErrorFromGitHub(resp, "failed to get workflow logs")
+		}
+	}
+
+	logFiles, _, err := readZipArchive(url.String(), presignedHTTPClient)
+	if err != nil {
+		return "", fmt.Errorf("failed to read log archive for run %d: %w", runID, err)
+	}
+
+	prefix := jobName + "/"
+	filtered := make([]logFile, 0)
 	for _, lf := range logFiles {
-		if !noHeaders {
-			allLogs.WriteString(fmt.Sprintf("=== %s ===\n", lf.name))
-		}
-		allLogs.WriteString(lf.data)
-		if !strings.HasSuffix(lf.data, "\n") {
-			allLogs.WriteString("\n")
+		if strings.HasPrefix(lf.name, prefix) {
+			filtered = append(filtered, lf)
 		}
 	}
-
-	logStr := strings.TrimRight(allLogs.String(), "\n")
-
-	// Apply filtering if specified
-	if filterOpts != nil && (filterOpts.Filter != "" || filterOpts.FilterRegex != "") {
-		parsedLines := parseLogLines(logStr)
-		filteredLines, err := filterLogLines(parsedLines, filterOpts)
-		if err != nil {
-			return "", err
-		}
-		if filteredLines == nil {
-			return "", nil
-		}
-		logStr = linesToString(filteredLines)
+	if len(filtered) == 0 {
+		return "", fmt.Errorf("no logs for job %q (%d) found in run %d archive", jobName, jobID, runID)
 	}
 
-	// Apply line limiting (offset, head, tail)
-	lines := strings.Split(logStr, "\n")
-
-	// Apply offset first (skip lines from the beginning)
-	if offset > 0 && offset < len(lines) {
-		lines = lines[offset:]
-	}
-
-	// Apply tail (last N lines - takes precedence over head)
-	if tail > 0 {
-		if len(lines) > tail {
-			lines = lines[len(lines)-tail:]
-		}
-	} else if head > 0 {
-		// Apply head (at most N lines)
-		if len(lines) > head {
-			lines = lines[:head]
-		}
-	}
-
-	logStr = strings.Join(lines, "\n")
-	if logStr != "" {
-		logStr = logStr + "\n"
-	}
-
-	return logStr, nil
+	return formatLogFiles(filtered, head, tail, offset, noHeaders, filterOpts)
 }
 
 // GetWorkflowRunArtifacts retrieves artifacts for a workflow run
@@ -2987,7 +2981,7 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 		}
 
 		// 3. Extract error lines from job logs
-		errorLines := c.extractErrorLines(ctx, job.ID, maxLogLines)
+		errorLines := c.extractErrorLines(ctx, runID, job.ID, maxLogLines)
 		failedJob.ErrorLines = errorLines
 
 		diagnosis.FailedJobs = append(diagnosis.FailedJobs, failedJob)
@@ -3005,11 +2999,20 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 }
 
 // extractErrorLines fetches logs for a job and extracts lines matching error patterns
-func (c *Client) extractErrorLines(ctx context.Context, jobID int64, maxLines int) []string {
+func (c *Client) extractErrorLines(ctx context.Context, runID, jobID int64, maxLines int) []string {
 	logs, err := c.GetWorkflowJobLogs(ctx, jobID, 0, 0, 0, true, nil)
 	if err != nil {
 		log.Debugf("Could not fetch logs for job %d: %v", jobID, err)
-		return []string{fmt.Sprintf("[could not fetch logs: %v]", err)}
+		if runID > 0 {
+			archiveLogs, archiveErr := c.GetWorkflowJobLogsFromRunArchive(ctx, runID, jobID, 0, 0, 0, true, nil)
+			if archiveErr == nil {
+				logs = archiveLogs
+			} else {
+				return []string{fmt.Sprintf("[could not fetch logs: %v; archive fallback failed: %v]", err, archiveErr)}
+			}
+		} else {
+			return []string{fmt.Sprintf("[could not fetch logs: %v]", err)}
+		}
 	}
 
 	lines := strings.Split(logs, "\n")

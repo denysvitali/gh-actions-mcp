@@ -914,7 +914,7 @@ func (s *MCPServer) getRunLogs(ctx context.Context, client *github.Client, owner
 	// Check if getting logs for a specific job
 	if jobIDFloat, ok := args["job_id"].(float64); ok {
 		jobID := int64(jobIDFloat)
-		return s.getJobLogs(ctx, client, owner, repo, jobID, args)
+		return s.getRunJobLogs(ctx, client, owner, repo, runID, jobID, args)
 	}
 
 	// Get workflow run logs
@@ -993,6 +993,84 @@ func (s *MCPServer) getRunLogs(ctx context.Context, client *github.Client, owner
 
 	if err != nil {
 		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for run %d", runID), owner, repo)), nil
+	}
+
+	callerLimited := head > 0 || tail > 0 || search != "" || searchRegex != "" || section != ""
+	return truncateLogResult(logs, s.getLogLines(), callerLimited), nil
+}
+
+func (s *MCPServer) getRunJobLogs(ctx context.Context, client *github.Client, owner, repo string, runID, jobID int64, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	head := 0
+	if h, ok := args["head"].(float64); ok && h > 0 {
+		head = int(h)
+	}
+
+	tail := 0
+	if t, ok := args["tail"].(float64); ok && t > 0 {
+		tail = int(t)
+	}
+
+	offset := 0
+	if o, ok := args["offset"].(float64); ok && o > 0 {
+		offset = int(o)
+	}
+
+	search := ""
+	if s, ok := args["search"].(string); ok {
+		search = s
+	} else if f, ok := args["filter"].(string); ok {
+		search = f
+	}
+
+	searchRegex := ""
+	if sr, ok := args["search_regex"].(string); ok {
+		searchRegex = sr
+	} else if fr, ok := args["filter_regex"].(string); ok {
+		searchRegex = fr
+	}
+
+	if search != "" && searchRegex != "" {
+		return errorResult("search and search_regex are mutually exclusive"), nil
+	}
+
+	contextLines := 0
+	if c, ok := args["context"].(float64); ok && c > 0 {
+		contextLines = int(c)
+	}
+
+	noHeaders := false
+	if nh, ok := args["no_headers"].(bool); ok {
+		noHeaders = nh
+	}
+
+	filterOpts := &github.LogFilterOptions{
+		Filter:       search,
+		FilterRegex:  searchRegex,
+		ContextLines: contextLines,
+	}
+
+	section := ""
+	if sec, ok := args["section"].(string); ok {
+		section = sec
+	}
+
+	var logs string
+	var err error
+
+	if section != "" {
+		logs, err = client.GetLogSection(ctx, 0, jobID, section, filterOpts)
+	} else {
+		logs, err = client.GetWorkflowJobLogs(ctx, jobID, head, tail, offset, noHeaders, filterOpts)
+	}
+
+	if err != nil && runID > 0 {
+		if section == "" {
+			logs, err = client.GetWorkflowJobLogsFromRunArchive(ctx, runID, jobID, head, tail, offset, noHeaders, filterOpts)
+		}
+	}
+
+	if err != nil {
+		return errorResult(s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for job %d", jobID), owner, repo)), nil
 	}
 
 	callerLimited := head > 0 || tail > 0 || search != "" || searchRegex != "" || section != ""
