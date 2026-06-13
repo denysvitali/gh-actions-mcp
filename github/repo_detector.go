@@ -45,8 +45,15 @@ func NewRepoDetector() *RepoDetector {
 }
 
 // ParseGitURL parses a git URL and extracts owner/repo
-// Supports SSH, HTTPS, git://, and bare formats
+// Supports SSH, HTTPS, git://, and bare formats. It also reverses git
+// url.<base>.insteadOf rewrites (e.g. gh-proxy) before parsing.
 func ParseGitURL(remoteURL string) (string, string, error) {
+	// Undo git insteadOf rewrites such as gh-proxy so that a proxied remote
+	// URL is translated back to its original github.com form.
+	if reversed, revErr := ReverseInsteadOf(remoteURL); revErr == nil {
+		remoteURL = reversed
+	}
+
 	// Validate URL - reject tokens
 	if containsToken(remoteURL) {
 		return "", "", fmt.Errorf("URL appears to contain a token (refusing for security)")

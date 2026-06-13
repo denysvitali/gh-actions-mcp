@@ -1172,8 +1172,16 @@ func (c *Client) GetRepoInfo() (string, string) {
 	return c.owner, c.repo
 }
 
-// InferRepoFromOrigin attempts to extract owner/repo from a git remote URL
+// InferRepoFromOrigin attempts to extract owner/repo from a git remote URL.
+// It also reverses git url.<base>.insteadOf rewrites (for example gh-proxy)
+// before parsing.
 func InferRepoFromOrigin(remoteURL string) (owner, repo string, err error) {
+	// Undo git insteadOf rewrites such as gh-proxy so that a proxied remote
+	// URL is translated back to its original github.com form.
+	if reversed, revErr := ReverseInsteadOf(remoteURL); revErr == nil {
+		remoteURL = reversed
+	}
+
 	// Handle bare owner/repo format (e.g., "owner/repo")
 	if !strings.Contains(remoteURL, "://") && !strings.Contains(remoteURL, "@") {
 		path := strings.TrimSuffix(remoteURL, ".git")
