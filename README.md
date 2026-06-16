@@ -52,10 +52,11 @@ log_level: info
 ```
 
 Config file locations (in order of precedence):
-1. `--config` flag
-2. `./config.yaml`
-3. `~/.config/gh-actions-mcp/config.yaml`
-4. `/etc/gh-actions-mcp/config.yaml`
+1. `--config` flag (explicit path)
+2. `~/.config/gh-actions-mcp/config.yaml`
+3. `/etc/gh-actions-mcp/config.yaml`
+
+> **Note:** the working directory is intentionally NOT searched. When run from inside a project that happens to have a `config.yaml` of its own (e.g. another service's config), the global gh-actions-mcp config would otherwise be ignored. Use `--config` if you want to point at a project-local file.
 
 ### Command Line Flags
 

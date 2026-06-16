@@ -195,6 +195,35 @@ func TestLoad_FileNotFound(t *testing.T) {
 	}
 }
 
+// TestLoad_IgnoresCwdConfig verifies that a config.yaml in the current
+// working directory is NOT picked up by the default search path. This
+// prevents running gh-actions-mcp from inside another project (e.g. one
+// with its own config.yaml) from silently shadowing the global gh-proxy
+// token in ~/.config/gh-actions-mcp/config.yaml.
+func TestLoad_IgnoresCwdConfig(t *testing.T) {
+	// Save and restore HOME / cwd so we can isolate the test.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	// A project-local config.yaml that DOES NOT contain a token.
+	projectDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "config.yaml"), []byte("repo_owner: some-owner\n"), 0o644))
+	require.NoError(t, os.Chdir(projectDir))
+
+	// A global config that DOES contain a token. It must win.
+	globalDir := filepath.Join(tmpHome, ".config", "gh-actions-mcp")
+	require.NoError(t, os.MkdirAll(globalDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte("token: global-token\n"), 0o644))
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, "global-token", cfg.Token, "token should come from ~/.config/gh-actions-mcp/config.yaml, not from cwd")
+}
+
 func TestSetLogger(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.DebugLevel)

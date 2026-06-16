@@ -58,28 +58,42 @@ func Load(configPath string) (*Config, error) {
 	_ = v.BindEnv("api_base_url", "GITHUB_API_BASE_URL", "GH_API_BASE_URL")
 	_ = v.BindEnv("upload_url", "GITHUB_UPLOAD_URL", "GH_UPLOAD_URL")
 
-	// Config file
+	// Config file. We support two modes:
+	//   1) Explicit path via --config / configPath: load that single file.
+	//   2) Default search: walk all candidate paths in priority order (cwd
+	//      wins, then user config dir, then /etc) and MERGE them. Later
+	//      layers fill in only the keys the earlier layers did not set, so
+	//      a project-local config.yaml can override repo_owner/repo_name
+	//      while still inheriting the global token (and vice versa).
 	if configPath != "" {
 		v.SetConfigFile(configPath)
+		if err := v.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+				log.Debugf("No config file found, using defaults and environment variables")
+			} else if configErr, ok := err.(viper.ConfigParseError); ok {
+				return nil, fmt.Errorf("config file syntax error: %w\nEnsure your config file is valid YAML format", configErr)
+			} else {
+				return nil, fmt.Errorf("failed to read config file: %w\nCheck file permissions and path", err)
+			}
+		}
 	} else {
+		// Only look in dedicated gh-actions-mcp config directories. We
+		// intentionally skip "." because running from a project's working
+		// directory (e.g. from inside another repo) would otherwise pick up
+		// that project's own config.yaml and silently ignore the global
+		// config. Use --config / -c to point at a project-local file.
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
-		v.AddConfigPath(".")
 		v.AddConfigPath("$HOME/.config/gh-actions-mcp")
 		v.AddConfigPath("/etc/gh-actions-mcp")
-	}
-
-	// Try to read config file, provide clearer error messages
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found is OK - will use defaults and env vars
-			log.Debugf("No config file found, using defaults and environment variables")
-		} else if configErr, ok := err.(viper.ConfigParseError); ok {
-			// Config file exists but has invalid syntax - provide clearer error
-			return nil, fmt.Errorf("config file syntax error: %w\nEnsure your config file is valid YAML format", configErr)
-		} else {
-			// Other error (permissions, etc.) - provide clearer error
-			return nil, fmt.Errorf("failed to read config file: %w\nCheck file permissions and path", err)
+		if err := v.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+				log.Debugf("No config file found, using defaults and environment variables")
+			} else if configErr, ok := err.(viper.ConfigParseError); ok {
+				return nil, fmt.Errorf("config file syntax error: %w\nEnsure your config file is valid YAML format", configErr)
+			} else {
+				return nil, fmt.Errorf("failed to read config file: %w\nCheck file permissions and path", err)
+			}
 		}
 	}
 
