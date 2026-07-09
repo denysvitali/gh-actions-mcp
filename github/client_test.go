@@ -1735,6 +1735,50 @@ func TestDiagnoseFailure_InProgressRun(t *testing.T) {
 	assert.Contains(t, diagnosis.Summary, "still in_progress")
 }
 
+func TestWaitForRunFailsFastOnFailedJob(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":1,"status":"in_progress","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.com/run/1"}`))
+	})
+	mux.HandleFunc("/repos/owner/repo/actions/runs/1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":2,"jobs":[{"id":10,"status":"completed","conclusion":"success"},{"id":11,"status":"in_progress","steps":[{"name":"Unit Tests","status":"completed","conclusion":"failure"}]}]}`))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	client, err := NewClientWithOptions(ClientOptions{Token: "token", Owner: "owner", Repo: "repo", APIBaseURL: ts.URL + "/", UploadURL: ts.URL + "/"})
+	require.NoError(t, err)
+
+	result, err := client.WaitForRun(context.Background(), 1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", result.Status)
+	assert.Equal(t, "failure", result.Conclusion)
+}
+
+func TestWaitForAllWaitsForJobsRegardlessOfStatus(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":2,"status":"in_progress","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.com/run/2"}`))
+	})
+	mux.HandleFunc("/repos/owner/repo/actions/runs/2/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":2,"jobs":[{"id":20,"status":"completed","conclusion":"failure"},{"id":21,"status":"completed","conclusion":"cancelled"}]}`))
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	client, err := NewClientWithOptions(ClientOptions{Token: "token", Owner: "owner", Repo: "repo", APIBaseURL: ts.URL + "/", UploadURL: ts.URL + "/"})
+	require.NoError(t, err)
+
+	result, err := client.WaitForAll(context.Background(), 2, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", result.Status)
+	assert.Empty(t, result.Conclusion)
+}
+
 func TestAnalyzeTiming(t *testing.T) {
 	client, cleanup := newTimingAnalysisTestClient(t)
 	defer cleanup()

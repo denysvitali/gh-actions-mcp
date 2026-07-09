@@ -2440,8 +2440,19 @@ func (c *Client) determineOverallState(checkRuns []*CheckRun) string {
 	return "neutral"
 }
 
-// WaitForRun waits for a workflow run to complete (silent polling)
+// WaitForRun waits for a workflow run to complete, returning early when a job
+// fails (silent polling).
 func (c *Client) WaitForRun(ctx context.Context, runID int64, timeoutMinutes int) (*WaitRunResult, error) {
+	return c.waitForRun(ctx, runID, timeoutMinutes, false)
+}
+
+// WaitForAll waits for every job in a workflow run to reach a terminal state.
+// Unlike WaitForRun, a failed or cancelled job does not end the wait early.
+func (c *Client) WaitForAll(ctx context.Context, runID int64, timeoutMinutes int) (*WaitRunResult, error) {
+	return c.waitForRun(ctx, runID, timeoutMinutes, true)
+}
+
+func (c *Client) waitForRun(ctx context.Context, runID int64, timeoutMinutes int, waitAll bool) (*WaitRunResult, error) {
 	const defaultTimeoutMinutes = 30
 	const pollIntervalSeconds = 15
 
@@ -2495,8 +2506,44 @@ func (c *Client) WaitForRun(ctx context.Context, runID int64, timeoutMinutes int
 			return nil, fmt.Errorf("failed to get workflow run %d: %w", runID, err)
 		}
 
-		// Check if completed
-		if run.Status == "completed" {
+		// A normal wait is fail-fast: once a job has failed, there is no reason
+		// to wait for unrelated jobs that GitHub may still be cancelling.
+		if !waitAll && run.Status != "completed" {
+			jobs, err := c.GetWorkflowJobs(ctx, runID, "", 0)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get jobs for run %d: %w", runID, err)
+			}
+			for _, job := range jobs {
+				failedConclusion := job.Conclusion == "failure" || job.Conclusion == "timed_out"
+				failedStep := ""
+				for _, step := range job.Steps {
+					if step.Conclusion == "failure" || step.Conclusion == "timed_out" {
+						failedStep = step.Conclusion
+						break
+					}
+				}
+				if failedConclusion || failedStep != "" {
+					elapsed := time.Since(startTime)
+					conclusion := job.Conclusion
+					if conclusion == "" {
+						conclusion = failedStep
+					}
+					log.Infof("Workflow run %d failed: %s (duration: %.1fs)", runID, conclusion, elapsed.Seconds())
+					return &WaitRunResult{
+						Status:          "completed",
+						Conclusion:      conclusion,
+						DurationSeconds: elapsed.Seconds(),
+						RunURL:          run.URL,
+						StartedAt:       run.CreatedAt,
+						CompletedAt:     run.UpdatedAt,
+						TimeoutReached:  false,
+					}, nil
+				}
+			}
+		}
+
+		// Check if the run (or, for wait_all, every job) is completed.
+		if run.Status == "completed" && !waitAll {
 			elapsed := time.Since(startTime)
 			log.Infof("Workflow run %d completed: %s (duration: %.1fs)", runID, run.Conclusion, elapsed.Seconds())
 			return &WaitRunResult{
@@ -2508,6 +2555,43 @@ func (c *Client) WaitForRun(ctx context.Context, runID int64, timeoutMinutes int
 				CompletedAt:     run.UpdatedAt,
 				TimeoutReached:  false,
 			}, nil
+		}
+		if waitAll {
+			jobs, err := c.GetWorkflowJobs(ctx, runID, "", 0)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get jobs for run %d: %w", runID, err)
+			}
+			if len(jobs) > 0 {
+				allCompleted := true
+				for _, job := range jobs {
+					if job.Status != "completed" {
+						allCompleted = false
+						break
+					}
+				}
+				if allCompleted {
+					elapsed := time.Since(startTime)
+					return &WaitRunResult{
+						Status:          "completed",
+						Conclusion:      run.Conclusion,
+						DurationSeconds: elapsed.Seconds(),
+						RunURL:          run.URL,
+						StartedAt:       run.CreatedAt,
+						CompletedAt:     run.UpdatedAt,
+						TimeoutReached:  false,
+					}, nil
+				}
+			} else if run.Status == "completed" {
+				return &WaitRunResult{
+					Status:          "completed",
+					Conclusion:      run.Conclusion,
+					DurationSeconds: time.Since(startTime).Seconds(),
+					RunURL:          run.URL,
+					StartedAt:       run.CreatedAt,
+					CompletedAt:     run.UpdatedAt,
+					TimeoutReached:  false,
+				}, nil
+			}
 		}
 
 		// Wait before next poll (silent - no log during polling)

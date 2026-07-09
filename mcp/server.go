@@ -524,6 +524,25 @@ func (s *MCPServer) registerTools() {
 		),
 	), s.waitForRun)
 
+	// Tool: wait_all
+	s.srv.AddTool(mcp.NewTool("wait_all",
+		mcp.WithDescription("Wait silently for every job in a workflow run to complete, regardless of job status"),
+		mcp.WithString("owner",
+			mcp.Description("Optional: override repository owner for this call"),
+		),
+		mcp.WithString("repo",
+			mcp.Description("Optional: override repository name for this call"),
+		),
+		mcp.WithNumber("run_id",
+			mcp.Description("The workflow run ID to wait for"),
+			mcp.Required(),
+		),
+		mcp.WithNumber("timeout_minutes",
+			mcp.Description("Maximum time to wait in minutes (default: 30)"),
+			mcp.DefaultNumber(30),
+		),
+	), s.waitAll)
+
 	// Tool: wait_for_commit_checks
 	s.srv.AddTool(mcp.NewTool("wait_for_commit_checks",
 		mcp.WithDescription("Wait for all CI check runs for a commit ref (SHA, branch, or tag) to complete."),
@@ -1312,6 +1331,14 @@ func (s *MCPServer) getCheckStatus(ctx context.Context, request mcp.CallToolRequ
 }
 
 func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return s.waitForRunMode(ctx, request, false)
+}
+
+func (s *MCPServer) waitAll(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return s.waitForRunMode(ctx, request, true)
+}
+
+func (s *MCPServer) waitForRunMode(ctx context.Context, request mcp.CallToolRequest, waitAll bool) (*mcp.CallToolResult, error) {
 	args := request.GetArguments()
 	client, owner, repo, err := s.clientFromArgs(args)
 	if err != nil {
@@ -1331,12 +1358,21 @@ func (s *MCPServer) waitForRun(ctx context.Context, request mcp.CallToolRequest)
 		}
 	}
 
-	s.log.Infof("Waiting for run %d (timeout: %dm)", runID, timeoutMinutes)
+	s.log.Infof("Waiting for run %d (timeout: %dm, all: %t)", runID, timeoutMinutes, waitAll)
 
-	result, err := client.WaitForRun(ctx, runID, timeoutMinutes)
+	var result *github.WaitRunResult
+	if waitAll {
+		result, err = client.WaitForAll(ctx, runID, timeoutMinutes)
+	} else {
+		result, err = client.WaitForRun(ctx, runID, timeoutMinutes)
+	}
 	if err != nil {
 		if result == nil || !result.TimeoutReached {
-			return errorResult(s.formatAuthErrorForRepo(err, "failed to wait for run", owner, repo)), nil
+			message := "failed to wait for run"
+			if waitAll {
+				message = "failed to wait for all jobs"
+			}
+			return errorResult(s.formatAuthErrorForRepo(err, message, owner, repo)), nil
 		}
 	}
 

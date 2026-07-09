@@ -214,6 +214,20 @@ Cancel a running workflow.
 }
 ```
 
+### wait_all
+
+Wait for every job in a workflow run to complete, regardless of whether jobs succeed, fail, or are cancelled. Unlike `wait_for_run`, this does not return early after a failed step.
+
+```json
+{
+  "name": "wait_all",
+  "arguments": {
+    "run_id": 12345678,
+    "timeout_minutes": 30
+  }
+}
+```
+
 ### rerun_workflow
 
 Rerun a failed workflow.
