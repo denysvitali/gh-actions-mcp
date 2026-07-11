@@ -148,11 +148,14 @@ func TestConfig_Validate(t *testing.T) {
 
 func TestConfig_ValidateToken(t *testing.T) {
 	originalProvider := keychainTokenProvider
+	originalGHProvider := ghTokenProvider
 	keychainTokenProvider = func() (string, error) {
 		return "", errors.New("no token in test keychain")
 	}
+	ghTokenProvider = func() (string, error) { return "", errors.New("not logged in") }
 	t.Cleanup(func() {
 		keychainTokenProvider = originalProvider
+		ghTokenProvider = originalGHProvider
 	})
 
 	cfg := Config{Token: "token"}
@@ -160,6 +163,20 @@ func TestConfig_ValidateToken(t *testing.T) {
 
 	cfg.Token = ""
 	require.Error(t, cfg.ValidateToken())
+}
+
+func TestConfig_ValidateToken_UsesGHCLIFallback(t *testing.T) {
+	originalProvider, originalKeychainProvider := ghTokenProvider, keychainTokenProvider
+	keychainTokenProvider = func() (string, error) { return "", errors.New("no keychain token") }
+	ghTokenProvider = func() (string, error) { return "gho_test-from-cli", nil }
+	t.Cleanup(func() {
+		ghTokenProvider = originalProvider
+		keychainTokenProvider = originalKeychainProvider
+	})
+
+	cfg := Config{}
+	require.NoError(t, cfg.ValidateToken())
+	assert.Equal(t, "gho_test-from-cli", cfg.Token)
 }
 
 func TestConfig_Validate_UsesKeychainProvider(t *testing.T) {
