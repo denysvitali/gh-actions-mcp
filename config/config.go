@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os/exec"
 	"runtime"
 	"strings"
 
@@ -29,6 +30,15 @@ type Config struct {
 
 var log = logrus.New()
 var keychainTokenProvider = getTokenFromKeychain
+var ghTokenProvider = getTokenFromGHCLI
+
+func getTokenFromGHCLI() (string, error) {
+	output, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
 
 func SetLogger(l *logrus.Logger) {
 	log = l
@@ -136,9 +146,15 @@ func (c *Config) ValidateToken() error {
 			}
 		}
 	}
+	if c.Token == "" {
+		if token, err := ghTokenProvider(); err == nil && token != "" {
+			c.Token = token
+			log.Infof("Obtained GitHub token from gh CLI authentication")
+		}
+	}
 
 	if c.Token == "" {
-		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN environment variable, set 'token' in config file, or run 'gh auth login' on macOS")
+		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN, set 'token' in config, or run 'gh auth login'")
 	}
 	return nil
 }
