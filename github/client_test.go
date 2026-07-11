@@ -1450,6 +1450,28 @@ func TestErrorPatterns(t *testing.T) {
 	}
 }
 
+func TestGetCheckRunAnnotationErrors(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/check-runs/200/annotations", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"path":"internal/build.go","start_line":42,"annotation_level":"failure","title":"Compile","message":"undefined: Widget"},
+			{"path":"internal/build.go","start_line":10,"annotation_level":"warning","message":"unused import"}
+		]`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
+	baseURL, err := url.Parse(ts.URL + "/")
+	require.NoError(t, err)
+	ghc.BaseURL = baseURL
+	client := &Client{owner: "owner", repo: "repo", gh: ghc}
+
+	assert.Equal(t, []string{"internal/build.go:42: Compile: undefined: Widget"}, client.getCheckRunAnnotationErrors(context.Background(), 200, 150))
+}
+
 func TestBuildDiagnosisSummary(t *testing.T) {
 	client := NewClient("token", "owner", "repo")
 

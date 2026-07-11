@@ -2969,6 +2969,7 @@ type FailedJob struct {
 	Conclusion  string        `json:"conclusion"`
 	FailedSteps []*FailedStep `json:"failed_steps"`
 	ErrorLines  []string      `json:"error_lines"`
+	ErrorSource string        `json:"error_source,omitempty"`
 }
 
 // FailedStep represents a step that failed within a job
@@ -3064,9 +3065,16 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 			}
 		}
 
-		// 3. Extract error lines from job logs
-		errorLines := c.extractErrorLines(ctx, runID, job.ID, maxLogLines)
-		failedJob.ErrorLines = errorLines
+		// Check-run annotations contain structured, actionable failures without
+		// downloading a potentially large log archive. Logs remain the fallback
+		// because Actions does not emit annotations for every failure.
+		if errorLines := c.getCheckRunAnnotationErrors(ctx, job.ID, maxLogLines); len(errorLines) > 0 {
+			failedJob.ErrorLines = errorLines
+			failedJob.ErrorSource = "check_annotations"
+		} else {
+			failedJob.ErrorLines = c.extractErrorLines(ctx, runID, job.ID, maxLogLines)
+			failedJob.ErrorSource = "logs"
+		}
 
 		diagnosis.FailedJobs = append(diagnosis.FailedJobs, failedJob)
 	}
@@ -3080,6 +3088,56 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 	diagnosis.Summary = c.buildDiagnosisSummary(diagnosis)
 
 	return diagnosis, nil
+}
+
+// getCheckRunAnnotationErrors retrieves failure annotations for a workflow job.
+// Workflow-job IDs are check-run IDs, so this endpoint avoids a log download when
+// GitHub has already extracted an actionable error.
+func (c *Client) getCheckRunAnnotationErrors(ctx context.Context, jobID int64, maxLines int) []string {
+	if maxLines <= 0 {
+		return nil
+	}
+	perPage := maxLines
+	if perPage > 100 {
+		perPage = 100
+	}
+
+	annotations, _, err := c.gh.Checks.ListCheckRunAnnotations(ctx, c.owner, c.repo, jobID, &github.ListOptions{PerPage: perPage})
+	if err != nil {
+		log.Debugf("Could not fetch check-run annotations for job %d: %v", jobID, err)
+		return nil
+	}
+
+	result := make([]string, 0, len(annotations))
+	seen := make(map[string]struct{})
+	for _, annotation := range annotations {
+		if annotation.GetAnnotationLevel() != "failure" {
+			continue
+		}
+		message := strings.TrimSpace(annotation.GetMessage())
+		if message == "" {
+			continue
+		}
+		location := strings.TrimSpace(annotation.GetPath())
+		if line := annotation.GetStartLine(); line > 0 {
+			location = fmt.Sprintf("%s:%d", location, line)
+		}
+		if title := strings.TrimSpace(annotation.GetTitle()); title != "" {
+			message = title + ": " + message
+		}
+		if location != "" {
+			message = location + ": " + message
+		}
+		if _, ok := seen[message]; ok {
+			continue
+		}
+		seen[message] = struct{}{}
+		result = append(result, message)
+		if len(result) == maxLines {
+			break
+		}
+	}
+	return result
 }
 
 // extractErrorLines fetches logs for a job and extracts lines matching error patterns
