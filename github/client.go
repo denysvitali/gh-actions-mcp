@@ -131,7 +131,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	if opts.PerPageLimit <= 0 {
 		opts.PerPageLimit = 50
 	}
-	hc := &http.Client{Timeout: 30 * time.Second}
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: NewETagCacheTransport(nil)}
 	gh := github.NewClient(hc).WithAuthToken(opts.Token)
 	if opts.APIBaseURL != "" {
 		// Set BaseURL directly rather than via WithEnterpriseURLs, which
