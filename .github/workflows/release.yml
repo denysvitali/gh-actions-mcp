@@ -40,7 +40,7 @@ jobs:
           done
 
       - name: Create Release
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@v3.0.2
         with:
           files: dist/*
           generate_release_notes: true
