@@ -644,14 +644,6 @@ func (s *MCPServer) registerTools() {
 	))
 }
 
-// getFormat returns the format from config or default
-func (s *MCPServer) getFormat() string {
-	if s.config.DefaultFormat != "" {
-		return s.config.DefaultFormat
-	}
-	return "compact"
-}
-
 func (s *MCPServer) GetServer() *mcp.Server {
 	return s.srv
 }

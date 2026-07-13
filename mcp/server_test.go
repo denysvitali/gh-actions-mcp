@@ -18,11 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func mustJSON(value any) json.RawMessage {
-	data, _ := json.Marshal(value)
-	return data
-}
-
 func TestNewMCPServer(t *testing.T) {
 	logger := logrus.New()
 	cfg := &config.Config{
