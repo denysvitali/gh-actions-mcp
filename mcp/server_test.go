@@ -12,11 +12,16 @@ import (
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func mustJSON(value any) json.RawMessage {
+	data, _ := json.Marshal(value)
+	return data
+}
 
 func TestNewMCPServer(t *testing.T) {
 	logger := logrus.New()
@@ -26,7 +31,8 @@ func TestNewMCPServer(t *testing.T) {
 		RepoName:  "repo",
 	}
 
-	server := NewMCPServer(cfg, logger)
+	server, err := NewMCPServer(cfg, logger)
+	require.NoError(t, err)
 
 	assert.NotNil(t, server)
 	assert.NotNil(t, server.srv)
@@ -174,11 +180,115 @@ func TestMCPServerTools(t *testing.T) {
 		RepoName:  "repo",
 	}
 
-	server := NewMCPServer(cfg, logger)
+	server, err := NewMCPServer(cfg, logger)
+	require.NoError(t, err)
 
 	// Verify server and its components are properly initialized
 	assert.NotNil(t, server)
 	assert.NotNil(t, server.GetServer())
+}
+
+func TestOfficialSDKRoundTrip(t *testing.T) {
+	app, err := NewMCPServer(&config.Config{
+		Token:     "token",
+		RepoOwner: "owner",
+		RepoName:  "repo",
+	}, logrus.New())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := app.GetServer().Connect(ctx, serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	require.NoError(t, err)
+	defer clientSession.Close()
+
+	tools, err := clientSession.ListTools(ctx, nil)
+	require.NoError(t, err)
+	assert.Len(t, tools.Tools, 12)
+	toolByName := make(map[string]*mcp.Tool, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		toolByName[tool.Name] = tool
+	}
+	require.NotNil(t, toolByName["list_runs"].Annotations)
+	assert.True(t, toolByName["list_runs"].Annotations.ReadOnlyHint)
+	require.NotNil(t, toolByName["manage_run"].Annotations)
+	require.NotNil(t, toolByName["manage_run"].Annotations.DestructiveHint)
+	assert.True(t, *toolByName["manage_run"].Annotations.DestructiveHint)
+	assert.NotNil(t, toolByName["list_workflows"].OutputSchema)
+	assert.NotNil(t, toolByName["list_runs"].OutputSchema)
+	assert.NotNil(t, toolByName["analyze_timing"].OutputSchema)
+	assert.NotNil(t, toolByName["wait_for_run"].OutputSchema)
+	assert.NotNil(t, toolByName["manage_run"].OutputSchema)
+	assert.NotNil(t, toolByName["diagnose_failure"].OutputSchema)
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "get_run",
+		Arguments: map[string]any{},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.NotEmpty(t, result.Content)
+}
+
+func TestOfficialSDKResourceRoundTrip(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/123", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": 123,
+			"name": "CI",
+			"status": "completed",
+			"conclusion": "success",
+			"head_branch": "main",
+			"head_sha": "abc123",
+			"event": "push",
+			"run_number": 7,
+			"workflow_id": 99
+		}`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	app, err := NewMCPServer(&config.Config{
+		Token:      "token",
+		RepoOwner:  "owner",
+		RepoName:   "repo",
+		APIBaseURL: ts.URL + "/",
+		UploadURL:  ts.URL + "/",
+	}, logrus.New())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := app.GetServer().Connect(ctx, serverTransport, nil)
+	require.NoError(t, err)
+	defer serverSession.Close()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	require.NoError(t, err)
+	defer clientSession.Close()
+
+	templates, err := clientSession.ListResourceTemplates(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, templates.ResourceTemplates, 1)
+	assert.Equal(t, workflowRunResourceTemplate, templates.ResourceTemplates[0].URITemplate)
+
+	resource, err := clientSession.ReadResource(ctx, &mcp.ReadResourceParams{
+		URI: "github-actions://runs/owner/repo/123",
+	})
+	require.NoError(t, err)
+	require.Len(t, resource.Contents, 1)
+	assert.Equal(t, "application/json", resource.Contents[0].MIMEType)
+	assert.Contains(t, resource.Contents[0].Text, `"id":123`)
+	assert.Contains(t, resource.Contents[0].Text, `"conclusion":"success"`)
 }
 
 // Test workflow ID parsing
@@ -288,7 +398,7 @@ func TestFormatWorkflowStatusSummary(t *testing.T) {
 	assert.Contains(t, out, "- Lint: in_progress/- (id: 11)")
 }
 
-func TestRepoFromArgs(t *testing.T) {
+func TestClientFromTypedRepoInput(t *testing.T) {
 	server := &MCPServer{
 		config: &config.Config{
 			RepoOwner: "default-owner",
@@ -296,15 +406,12 @@ func TestRepoFromArgs(t *testing.T) {
 		},
 	}
 
-	owner, repo, err := server.repoFromArgs(map[string]interface{}{})
+	_, owner, repo, err := server.clientFromInput(repoInput{})
 	require.NoError(t, err)
 	assert.Equal(t, "default-owner", owner)
 	assert.Equal(t, "default-repo", repo)
 
-	owner, repo, err = server.repoFromArgs(map[string]interface{}{
-		"owner": "override-owner",
-		"repo":  "override-repo",
-	})
+	_, owner, repo, err = server.clientFromInput(repoInput{Owner: "override-owner", Repo: "override-repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "override-owner", owner)
 	assert.Equal(t, "override-repo", repo)
@@ -409,28 +516,11 @@ func TestAnalyzeTimingTool(t *testing.T) {
 		PerPageLimit: 50,
 	}
 
-	server := NewMCPServer(cfg, logger)
-	request := mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "analyze_timing",
-			Arguments: map[string]interface{}{
-				"workflow": "CI",
-				"branch":   "main",
-				"limit":    2,
-			},
-		},
-	}
-
-	result, err := server.analyzeTiming(context.Background(), request)
+	server, err := NewMCPServer(cfg, logger)
 	require.NoError(t, err)
-	require.False(t, result.IsError)
-	require.Len(t, result.Content, 1)
-
-	text, ok := mcp.AsTextContent(result.Content[0])
-	require.True(t, ok)
-
-	var analysis github.TimingAnalysis
-	err = json.Unmarshal([]byte(text.Text), &analysis)
+	_, analysis, err := server.analyzeTimingTyped(context.Background(), nil, analyzeTimingInput{
+		Workflow: "CI", Branch: "main", Limit: 2,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "workflow", analysis.Scope)
 	assert.Equal(t, int64(50), analysis.WorkflowID)
@@ -492,7 +582,7 @@ func TestAnalyzeTimingTool_OmitsBranchWhenNotProvided(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	server := NewMCPServer(&config.Config{
+	server, err := NewMCPServer(&config.Config{
 		Token:        "token",
 		RepoOwner:    owner,
 		RepoName:     repo,
@@ -500,18 +590,11 @@ func TestAnalyzeTimingTool_OmitsBranchWhenNotProvided(t *testing.T) {
 		UploadURL:    ts.URL + "/",
 		PerPageLimit: 50,
 	}, logrus.New())
-
-	result, err := server.analyzeTiming(context.Background(), mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "analyze_timing",
-			Arguments: map[string]interface{}{
-				"run_id": 103.0,
-				"limit":  2.0,
-			},
-		},
-	})
 	require.NoError(t, err)
-	require.False(t, result.IsError)
+
+	runID := int64(103)
+	_, _, err = server.analyzeTimingTyped(context.Background(), nil, analyzeTimingInput{RunID: &runID, Limit: 2})
+	require.NoError(t, err)
 	assert.Empty(t, listRunsBranch)
 }
 
@@ -542,7 +625,7 @@ func TestListRunsTool_OmitsBranchWhenNotProvided(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	server := NewMCPServer(&config.Config{
+	server, err := NewMCPServer(&config.Config{
 		Token:        "token",
 		RepoOwner:    owner,
 		RepoName:     repo,
@@ -550,16 +633,9 @@ func TestListRunsTool_OmitsBranchWhenNotProvided(t *testing.T) {
 		UploadURL:    ts.URL + "/",
 		PerPageLimit: 50,
 	}, logrus.New())
-
-	result, err := server.listRuns(context.Background(), mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "list_runs",
-			Arguments: map[string]interface{}{
-				"per_page": 5.0,
-			},
-		},
-	})
 	require.NoError(t, err)
-	require.False(t, result.IsError)
+
+	_, _, err = server.listRunsTyped(context.Background(), nil, listRunsInput{PerPage: 5})
+	require.NoError(t, err)
 	assert.Empty(t, listRunsBranch)
 }

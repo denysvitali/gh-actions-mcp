@@ -1,16 +1,14 @@
 # GitHub Actions MCP Server
 
-A Model Context Protocol (MCP) server for interacting with GitHub Actions. Provides tools to check workflow status, list workflows, and manage runs.
+A Model Context Protocol (MCP) server for interacting with GitHub Actions. It uses the official Go MCP SDK and provides tools to inspect, wait for, diagnose, and manage workflow runs.
 
 ## Features
 
-- **Get Actions Status**: View current status of GitHub Actions including recent workflow runs and statistics
 - **List Workflows**: View all workflows available in the repository
 - **Get Workflow Runs**: Get recent runs for a specific workflow
 - **Analyze Timing**: Compare workflow, job, and step durations across recent runs to spot regressions and slow steps
-- **Trigger Workflow**: Manually trigger a workflow to run
-- **Cancel Workflow Run**: Cancel a running workflow
-- **Rerun Workflow**: Rerun a failed workflow
+- **Check Status**: View workflow status for a branch, tag, or commit
+- **Manage Runs**: Cancel or rerun workflow runs
 - **Diagnose Failure**: One-shot diagnosis of a failed run — identifies failed jobs/steps, extracts error lines from logs, and checks for flakiness
 
 ## Installation
@@ -78,15 +76,33 @@ gh-actions-mcp --token $GITHUB_TOKEN  # Uses inferred values
 ### Running as MCP Server
 
 ```bash
-# Stdio mode (default, for Claude Desktop)
+# MCP uses newline-delimited JSON over stdin/stdout (for Claude Desktop and other local clients)
 gh-actions-mcp --token $GITHUB_TOKEN
 
-# SSE mode (for web-based MCP clients)
-gh-actions-mcp --mcp-mode sse --mcp-port 8080
-
-# HTTP mode
-gh-actions-mcp --mcp-mode http --mcp-port 8080
+# Or expose the MCP Streamable HTTP transport locally
+gh-actions-mcp --token $GITHUB_TOKEN --transport http --http-address 127.0.0.1:8080
 ```
+
+The Streamable HTTP endpoint defaults to `http://127.0.0.1:8080/mcp`, with a health check at `/healthz`. Non-loopback addresses require bearer authentication:
+
+```bash
+GH_ACTIONS_MCP_HTTP_TOKEN=change-me \
+  gh-actions-mcp --transport http --http-address 0.0.0.0:8080
+```
+
+Clients must then send `Authorization: Bearer change-me`. Cross-origin and localhost protections from the official Go SDK remain enabled.
+
+For direct production exposure, configure TLS and explicitly trusted browser origins:
+
+```bash
+GH_ACTIONS_MCP_HTTP_TOKEN=change-me \
+  gh-actions-mcp --transport http --http-address 0.0.0.0:8443 \
+  --http-tls-cert /run/secrets/tls.crt \
+  --http-tls-key /run/secrets/tls.key \
+  --http-allowed-origin https://mcp.example.com
+```
+
+Request bodies default to a 1 MiB limit (`--http-max-body`). The server also sets bounded read, write, idle, header, and graceful-shutdown timeouts. For OAuth deployments, terminate authentication and TLS in an API gateway and pass a dedicated bearer credential to this server; do not expose an unauthenticated non-loopback listener.
 
 ### Claude Desktop Integration
 
@@ -110,15 +126,15 @@ Add to your `claude_desktop_config.json`:
 
 ## Available Tools
 
-### get_actions_status
+### get_check_status
 
-Get the current status of GitHub Actions for the repository.
+Get workflow status for a branch, tag, or commit.
 
 ```json
 {
-  "name": "get_actions_status",
+  "name": "get_check_status",
   "arguments": {
-    "limit": 10
+    "ref": "main"
   }
 }
 ```
@@ -134,19 +150,21 @@ List all workflows available in the repository.
 }
 ```
 
-### get_workflow_runs
+### list_runs
 
 Get recent runs for a specific workflow.
 
 ```json
 {
-  "name": "get_workflow_runs",
+  "name": "list_runs",
   "arguments": {
-    "workflow_id": "CI",
-    "limit": 10
+    "workflow_id": 123456,
+    "per_page": 10
   }
 }
 ```
+
+`list_runs` and `list_workflows` return an envelope containing `runs` or `workflows` plus an optional `next_cursor`. Pass that opaque value back as `cursor` to retrieve the next page. Cursors are versioned, HMAC-protected, and bound to the repository and active filters, so tampering and cross-query reuse are rejected. Conclusion-filtered run pages are filled across GitHub API pages instead of returning misleading sparse pages. These tools publish SDK-generated output schemas for their envelopes; stable JSON tools such as timing analysis, waits, run management, artifact access, and failure diagnosis also publish typed output schemas.
 
 ### analyze_timing
 
@@ -187,29 +205,16 @@ gh-actions-mcp tool list_runs --args '{"owner":"example-org","repo":"example-rep
 gh-actions-mcp tool analyze_timing --args '{"owner":"example-org","repo":"example-repo","workflow":"CI","limit":10}'
 ```
 
-### trigger_workflow
+### manage_run
 
-Trigger a workflow to run manually.
-
-```json
-{
-  "name": "trigger_workflow",
-  "arguments": {
-    "workflow_id": "CI",
-    "ref": "main"
-  }
-}
-```
-
-### cancel_workflow_run
-
-Cancel a running workflow.
+Cancel or rerun an existing workflow run.
 
 ```json
 {
-  "name": "cancel_workflow_run",
+  "name": "manage_run",
   "arguments": {
-    "run_id": 12345678
+    "run_id": 12345678,
+    "action": "rerun"
   }
 }
 ```
@@ -228,17 +233,26 @@ Wait for every job in a workflow run to complete, regardless of whether jobs suc
 }
 ```
 
-### rerun_workflow
+### SDK resources
 
-Rerun a failed workflow.
+The server also exposes workflow-run metadata as an MCP resource template:
 
-```json
-{
-  "name": "rerun_workflow",
-  "arguments": {
-    "run_id": 12345678
-  }
-}
+```text
+github-actions://runs/{owner}/{repo}/{run_id}
+```
+
+For example, a client can read `github-actions://runs/octo-org/demo/12345678` and attach the returned `application/json` snapshot to a prompt. This is useful when the run metadata should be reused across several model turns without repeating a tool call.
+
+Tool schemas use the official `modelcontextprotocol/go-sdk` validator. Invalid required arguments, enum values, and numeric limits are rejected before GitHub is contacted. SDK tool annotations also mark inspection tools as read-only and `manage_run`/`download_artifact` as potentially destructive, allowing capable hosts to present an appropriate confirmation step.
+
+Safe GitHub API reads are retried up to three times for transport failures, HTTP 429, exhausted primary rate limits, and transient gateway/service failures. `Retry-After` and `X-RateLimit-Reset` are honored with a bounded delay, while exponential retries use jitter. Mutating requests are never replayed. Structured logs and in-process transport statistics expose latency, retry waits, rate-limit state, and ETag cache activity. Configure retries with `retry_max` or `GITHUB_RETRY_MAX`; set it to `-1` to disable retries.
+
+`download_artifact` writes only beneath `artifact_root` (`GITHUB_ARTIFACT_ROOT`), uses a same-directory temporary file, and atomically publishes the completed artifact. Existing destinations are preserved unless `overwrite: true` is explicitly supplied.
+
+Tool handlers are typed end-to-end through `modelcontextprotocol/go-sdk`; validated inputs are no longer converted back into untyped request maps. Build versions are reported consistently by `--version` and MCP initialization. Run transport-level protocol checks with:
+
+```bash
+make conformance
 ```
 
 ## GitHub Token Permissions
@@ -272,21 +286,15 @@ The library will automatically respect GitHub's rate limit headers and will retu
 
 ## Timeout Behavior for Workflows
 
-The `wait_workflow_run` tool includes configurable timeout behavior:
-
-- **Default timeout**: 600 seconds (10 minutes)
-- **Default poll interval**: 5 seconds
-- **Configuration**: Set via `timeout` and `poll_interval` parameters
-- **No timeout**: Set `timeout` to 0 to wait indefinitely (not recommended)
+The `wait_for_run`, `wait_all`, and `wait_for_commit_checks` tools accept a `timeout_minutes` argument. The default is 30 minutes and the server caps individual waits at 120 minutes.
 
 Example:
 ```json
 {
-  "name": "wait_workflow_run",
+  "name": "wait_for_run",
   "arguments": {
     "run_id": 12345678,
-    "poll_interval": 10,
-    "timeout": 1800
+    "timeout_minutes": 30
   }
 }
 ```
@@ -300,7 +308,7 @@ The tool will return a timeout error if the workflow doesn't complete within the
 ```json
 // Get the current status
 {
-  "name": "get_actions_status",
+  "name": "get_check_status",
   "arguments": {
     "limit": 5
   }
@@ -310,22 +318,21 @@ The tool will return a timeout error if the workflow doesn't complete within the
 ### Example 2: Trigger and Wait for a Workflow
 
 ```json
-// First, trigger the workflow
+// First, obtain or trigger a run using the GitHub Actions workflow tooling.
 {
-  "name": "trigger_workflow",
+  "name": "manage_run",
   "arguments": {
-    "workflow_id": "CI",
-    "ref": "main"
+    "run_id": 12345678,
+    "action": "rerun"
   }
 }
 
 // Then wait for it to complete (using the run_id from the trigger response)
 {
-  "name": "wait_workflow_run",
+  "name": "wait_for_run",
   "arguments": {
     "run_id": 12345678,
-    "poll_interval": 5,
-    "timeout": 600
+    "timeout_minutes": 30
   }
 }
 ```
@@ -335,19 +342,21 @@ The tool will return a timeout error if the workflow doesn't complete within the
 ```json
 // Get only lines containing "ERROR" with context
 {
-  "name": "get_workflow_logs",
+  "name": "get_run",
   "arguments": {
     "run_id": 12345678,
-    "filter": "ERROR",
+    "element": "logs",
+    "search": "ERROR",
     "context": 2
   }
 }
 
 // Get last 100 lines
 {
-  "name": "get_workflow_logs",
+  "name": "get_run",
   "arguments": {
     "run_id": 12345678,
+    "element": "logs",
     "tail": 100
   }
 }
@@ -357,7 +366,7 @@ The tool will return a timeout error if the workflow doesn't complete within the
 
 ```json
 {
-  "name": "get_workflow_runs",
+  "name": "list_runs",
   "arguments": {
     "workflow_id": "CI",
     "limit": 20

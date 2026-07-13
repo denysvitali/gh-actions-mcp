@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -94,6 +96,8 @@ type Client struct {
 	repo         string
 	gh           *github.Client
 	perPageLimit int
+	retry        *RetryTransport
+	cache        *ETagCacheTransport
 }
 
 func NewClient(token, owner, repo string) *Client {
@@ -124,6 +128,10 @@ type ClientOptions struct {
 	APIBaseURL string
 	// UploadURL overrides the upload URL. Defaults to APIBaseURL when empty.
 	UploadURL string
+	// RetryMax controls retries for safe read requests when GitHub responds with
+	// transient or rate-limit errors. Zero uses the default; a negative value
+	// disables retries.
+	RetryMax int
 }
 
 // NewClientWithOptions creates a new GitHub client using the provided options.
@@ -131,7 +139,16 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	if opts.PerPageLimit <= 0 {
 		opts.PerPageLimit = 50
 	}
-	hc := &http.Client{Timeout: 30 * time.Second, Transport: NewETagCacheTransport(nil)}
+	retryMax := opts.RetryMax
+	if retryMax == 0 {
+		retryMax = DefaultRetryMax
+	}
+	retry := NewRetryTransport(nil, retryMax)
+	cache := NewETagCacheTransport(retry)
+	hc := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: cache,
+	}
 	gh := github.NewClient(hc).WithAuthToken(opts.Token)
 	if opts.APIBaseURL != "" {
 		// Set BaseURL directly rather than via WithEnterpriseURLs, which
@@ -163,7 +180,18 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		repo:         opts.Repo,
 		gh:           gh,
 		perPageLimit: opts.PerPageLimit,
+		retry:        retry,
+		cache:        cache,
 	}, nil
+}
+
+type ClientTransportStats struct {
+	Retry RetryStatsSnapshot
+	Cache ETagCacheStats
+}
+
+func (c *Client) TransportStats() ClientTransportStats {
+	return ClientTransportStats{Retry: c.retry.Stats(), Cache: c.cache.Stats()}
 }
 
 type WorkflowRun struct {
@@ -433,6 +461,7 @@ type ListRunsOptions struct {
 	CreatedAfter string // Optional: ISO 8601 date string
 	Event        string // Optional: push, pull_request, etc.
 	Actor        string // Optional: GitHub username
+	Page         int    // Optional: one-based GitHub API page
 }
 
 // GetCheckRunsOptions contains parameters for getting check runs
@@ -793,9 +822,22 @@ func (c *Client) GetWorkflowRuns(ctx context.Context, workflowID int64, branch s
 }
 
 func (c *Client) GetWorkflows(ctx context.Context) ([]*Workflow, error) {
-	workflows, _, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: c.perPageLimit})
+	workflows, _, err := c.ListWorkflowsPage(ctx, c.perPageLimit, 1)
+	return workflows, err
+}
+
+// ListWorkflowsPage returns one page of workflows and the next GitHub page,
+// or zero when there are no more pages.
+func (c *Client) ListWorkflowsPage(ctx context.Context, perPage, page int) ([]*Workflow, int, error) {
+	if perPage <= 0 || perPage > 100 {
+		perPage = c.perPageLimit
+	}
+	if page <= 0 {
+		page = 1
+	}
+	workflows, response, err := c.gh.Actions.ListWorkflows(ctx, c.owner, c.repo, &github.ListOptions{PerPage: perPage, Page: page})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list workflows: %w", err)
+		return nil, 0, fmt.Errorf("failed to list workflows: %w", err)
 	}
 
 	result := make([]*Workflow, len(workflows.Workflows))
@@ -808,7 +850,11 @@ func (c *Client) GetWorkflows(ctx context.Context) ([]*Workflow, error) {
 		}
 	}
 
-	return result, nil
+	nextPage := 0
+	if response != nil {
+		nextPage = response.NextPage
+	}
+	return result, nextPage, nil
 }
 
 func (c *Client) TriggerWorkflow(ctx context.Context, workflowID string, ref string) error {
@@ -1262,6 +1308,40 @@ func ParseWorkflowID(id string) (int64, error) {
 
 // ListRepositoryWorkflowRunsWithOptions lists workflow runs with comprehensive filtering options
 func (c *Client) ListRepositoryWorkflowRunsWithOptions(ctx context.Context, opts *ListRunsOptions) ([]*WorkflowRun, error) {
+	if opts == nil {
+		opts = &ListRunsOptions{}
+	}
+	limit := opts.Per_page
+	if limit <= 0 {
+		limit = c.perPageLimit
+	}
+	page := opts.Page
+	if page <= 0 {
+		page = 1
+	}
+	result := make([]*WorkflowRun, 0, limit)
+	options := *opts
+	for page > 0 && len(result) < limit {
+		options.Page = page
+		runs, nextPage, err := c.ListRepositoryWorkflowRunsPage(ctx, &options)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, runs...)
+		page = nextPage
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+// ListRepositoryWorkflowRunsPage returns one page of workflow runs and the
+// next GitHub page, or zero when there are no more pages.
+func (c *Client) ListRepositoryWorkflowRunsPage(ctx context.Context, opts *ListRunsOptions) ([]*WorkflowRun, int, error) {
+	if opts == nil {
+		opts = &ListRunsOptions{}
+	}
 	githubOpts := &github.ListWorkflowRunsOptions{
 		ListOptions: github.ListOptions{},
 	}
@@ -1292,20 +1372,24 @@ func (c *Client) ListRepositoryWorkflowRunsWithOptions(ctx context.Context, opts
 		per_page = opts.Per_page
 	}
 	githubOpts.ListOptions.PerPage = per_page
+	if opts.Page > 0 {
+		githubOpts.ListOptions.Page = opts.Page
+	}
 
 	var runs *github.WorkflowRuns
+	var response *github.Response
 	var err error
 
 	if opts.WorkflowID != nil {
 		// List runs for a specific workflow
-		runs, _, err = c.gh.Actions.ListWorkflowRunsByID(ctx, c.owner, c.repo, *opts.WorkflowID, githubOpts)
+		runs, response, err = c.gh.Actions.ListWorkflowRunsByID(ctx, c.owner, c.repo, *opts.WorkflowID, githubOpts)
 	} else {
 		// List all repository workflow runs
-		runs, _, err = c.gh.Actions.ListRepositoryWorkflowRuns(ctx, c.owner, c.repo, githubOpts)
+		runs, response, err = c.gh.Actions.ListRepositoryWorkflowRuns(ctx, c.owner, c.repo, githubOpts)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to list workflow runs: %w", err)
+		return nil, 0, fmt.Errorf("failed to list workflow runs: %w", err)
 	}
 
 	result := make([]*WorkflowRun, 0, len(runs.WorkflowRuns))
@@ -1317,7 +1401,11 @@ func (c *Client) ListRepositoryWorkflowRunsWithOptions(ctx context.Context, opts
 		result = append(result, workflowRunFromGitHub(run))
 	}
 
-	return result, nil
+	nextPage := 0
+	if response != nil {
+		nextPage = response.NextPage
+	}
+	return result, nextPage, nil
 }
 
 // GetWorkflowJobs retrieves jobs for a workflow run
@@ -2163,9 +2251,27 @@ func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, fileP
 	}, nil
 }
 
-// DownloadArtifact downloads an artifact and saves it to a file
-// If outputPath is empty, a default path will be generated (artifact-name.zip)
+type ArtifactDownloadOptions struct {
+	Root       string
+	OutputPath string
+	Overwrite  bool
+}
+
+// DownloadArtifact preserves the library API while using safe, atomic writes.
 func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputPath string) (*ArtifactDownloadResult, error) {
+	root := "."
+	relativePath := outputPath
+	if filepath.IsAbs(outputPath) {
+		root = filepath.Dir(outputPath)
+		relativePath = filepath.Base(outputPath)
+	}
+	return c.DownloadArtifactWithOptions(ctx, artifactID, ArtifactDownloadOptions{Root: root, OutputPath: relativePath})
+}
+
+// DownloadArtifactWithOptions writes an artifact beneath Root using a
+// temporary file and atomic publication. Existing files are preserved unless
+// Overwrite is explicitly set.
+func (c *Client) DownloadArtifactWithOptions(ctx context.Context, artifactID int64, options ArtifactDownloadOptions) (*ArtifactDownloadResult, error) {
 	// First get artifact metadata
 	artifact, err := c.GetArtifactByID(ctx, artifactID)
 	if err != nil {
@@ -2173,8 +2279,39 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 	}
 
 	// Generate default output path if not provided
-	if outputPath == "" {
-		outputPath = fmt.Sprintf("%s.zip", artifact.Name)
+	outputPath := filepath.Clean(options.OutputPath)
+	if options.OutputPath == "" {
+		name := strings.NewReplacer("/", "-", "\\", "-").Replace(artifact.Name)
+		outputPath = fmt.Sprintf("%s.zip", filepath.Base(name))
+	}
+	if !filepath.IsLocal(outputPath) {
+		return nil, fmt.Errorf("output path %q must stay beneath artifact root", options.OutputPath)
+	}
+	rootPath := options.Root
+	if rootPath == "" {
+		rootPath = "."
+	}
+	rootPath, err = filepath.Abs(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve artifact root: %w", err)
+	}
+	if err := os.MkdirAll(rootPath, 0750); err != nil {
+		return nil, fmt.Errorf("create artifact root: %w", err)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("open artifact root: %w", err)
+	}
+	defer root.Close()
+	if err := root.MkdirAll(filepath.Dir(outputPath), 0750); err != nil {
+		return nil, fmt.Errorf("create artifact output directory: %w", err)
+	}
+	if !options.Overwrite {
+		if _, statErr := root.Lstat(outputPath); statErr == nil {
+			return nil, fmt.Errorf("artifact destination %q already exists; set overwrite=true to replace it", outputPath)
+		} else if !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("inspect artifact destination %q: %w", outputPath, statErr)
+		}
 	}
 
 	// Download the artifact ZIP
@@ -2205,19 +2342,18 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 		return nil, fmt.Errorf("failed to fetch artifact: HTTP %d", zipResp.StatusCode)
 	}
 
-	// Create output file
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create output file %q: %w", outputPath, err)
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return nil, fmt.Errorf("create artifact temporary name: %w", err)
 	}
-	defer outFile.Close()
-
-	// Track whether write succeeded; remove partial file on failure
-	writeSucceeded := false
+	tempPath := filepath.Join(filepath.Dir(outputPath), "."+filepath.Base(outputPath)+".tmp-"+hex.EncodeToString(random[:]))
+	outFile, err := root.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("create artifact temporary file: %w", err)
+	}
 	defer func() {
-		if !writeSucceeded {
-			os.Remove(outputPath)
-		}
+		_ = outFile.Close()
+		_ = root.Remove(tempPath)
 	}()
 
 	// Copy data to file
@@ -2225,36 +2361,49 @@ func (c *Client) DownloadArtifact(ctx context.Context, artifactID int64, outputP
 	if err != nil {
 		return nil, fmt.Errorf("failed to write artifact to file: %w", err)
 	}
-	writeSucceeded = true
+	if err := outFile.Sync(); err != nil {
+		return nil, fmt.Errorf("sync artifact temporary file: %w", err)
+	}
 
 	// Count files in the archive
 	if _, err := outFile.Seek(0, 0); err != nil {
 		return nil, fmt.Errorf("failed to seek artifact file: %w", err)
 	}
 	zipReader, err := zip.NewReader(outFile, bytesWritten)
-	if err != nil {
-		return &ArtifactDownloadResult{
-			Name:      artifact.Name,
-			ID:        artifact.ID,
-			SavedPath: outputPath,
-			FileCount: 0,
-			TotalSize: bytesWritten,
-		}, nil
-	}
-
 	fileCount := 0
-	for _, file := range zipReader.File {
-		if !file.FileInfo().IsDir() {
-			fileCount++
+	if err == nil {
+		for _, file := range zipReader.File {
+			if !file.FileInfo().IsDir() {
+				fileCount++
+			}
+		}
+	}
+	if err := outFile.Close(); err != nil {
+		return nil, fmt.Errorf("close artifact temporary file: %w", err)
+	}
+	if options.Overwrite {
+		if err := root.Rename(tempPath, outputPath); err != nil {
+			return nil, fmt.Errorf("publish artifact %q: %w", outputPath, err)
+		}
+	} else {
+		if err := root.Link(tempPath, outputPath); err != nil {
+			return nil, fmt.Errorf("publish artifact %q without overwrite: %w", outputPath, err)
+		}
+		if err := root.Remove(tempPath); err != nil {
+			return nil, fmt.Errorf("remove artifact temporary file: %w", err)
 		}
 	}
 
-	log.Infof("Downloaded artifact %q to %s (%d bytes, %d files)", artifact.Name, outputPath, bytesWritten, fileCount)
+	savedPath := filepath.Join(rootPath, outputPath)
+	if options.Root == "" || options.Root == "." {
+		savedPath = outputPath
+	}
+	log.Infof("Downloaded artifact %q to %s (%d bytes, %d files)", artifact.Name, savedPath, bytesWritten, fileCount)
 
 	return &ArtifactDownloadResult{
 		Name:      artifact.Name,
 		ID:        artifact.ID,
-		SavedPath: outputPath,
+		SavedPath: savedPath,
 		FileCount: fileCount,
 		TotalSize: bytesWritten,
 	}, nil

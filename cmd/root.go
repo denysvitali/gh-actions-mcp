@@ -14,19 +14,26 @@ import (
 	"github.com/denysvitali/gh-actions-mcp/github"
 	appmcp "github.com/denysvitali/gh-actions-mcp/mcp"
 
-	mcptypes "github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	mcptypes "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var (
-	version   = "dev"
-	cfgFile   string
-	repoOwner string
-	repoName  string
-	token     string
-	logLevel  string
+	version        = "dev"
+	cfgFile        string
+	repoOwner      string
+	repoName       string
+	token          string
+	logLevel       string
+	mcpTransport   string
+	mcpHTTPAddress string
+	mcpHTTPPath    string
+	mcpHTTPToken   string
+	mcpHTTPTLSCert string
+	mcpHTTPTLSKey  string
+	mcpHTTPOrigins []string
+	mcpHTTPMaxBody int64
 )
 
 // Logs command flags
@@ -59,6 +66,14 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&repoName, "repo-name", "r", "", "repository name")
 	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "GitHub token (or use GITHUB_TOKEN env var, or macOS keychain)")
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "l", "info", "log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&mcpTransport, "transport", "stdio", "MCP transport: stdio or http")
+	rootCmd.PersistentFlags().StringVar(&mcpHTTPAddress, "http-address", "127.0.0.1:8080", "Streamable HTTP listen address")
+	rootCmd.PersistentFlags().StringVar(&mcpHTTPPath, "http-path", "/mcp", "Streamable HTTP endpoint path")
+	rootCmd.PersistentFlags().StringVar(&mcpHTTPToken, "http-token", "", "Bearer token required by the Streamable HTTP endpoint (or GH_ACTIONS_MCP_HTTP_TOKEN)")
+	rootCmd.PersistentFlags().StringVar(&mcpHTTPTLSCert, "http-tls-cert", "", "TLS certificate for Streamable HTTP")
+	rootCmd.PersistentFlags().StringVar(&mcpHTTPTLSKey, "http-tls-key", "", "TLS private key for Streamable HTTP")
+	rootCmd.PersistentFlags().StringSliceVar(&mcpHTTPOrigins, "http-allowed-origin", nil, "trusted browser origin (repeatable)")
+	rootCmd.PersistentFlags().Int64Var(&mcpHTTPMaxBody, "http-max-body", 1<<20, "maximum Streamable HTTP request body in bytes")
 
 	// Infer repo from git origin
 	rootCmd.AddCommand(inferCmd)
@@ -102,10 +117,13 @@ Other configuration:
 		}
 
 		// Create MCP server
-		mcpServer := appmcp.NewMCPServer(cfg, log)
+		mcpServer, err := appmcp.NewMCPServer(cfg, log)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = mcpServer.Close() }()
 
-		// Run stdio transport using the library's built-in handler
-		return server.ServeStdio(mcpServer.GetServer())
+		return serveMCP(cmd.Context(), mcpServer)
 	},
 }
 
@@ -169,6 +187,7 @@ func loadConfigWithOptions(requireRepo bool) (*config.Config, error) {
 	if logLevel != "" {
 		cfg.LogLevel = logLevel
 	}
+	cfg.ServerVersion = version
 
 	// Try to infer repo from git if not set
 	if cfg.RepoOwner == "" || cfg.RepoName == "" {
@@ -318,7 +337,11 @@ func runTool(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	mcpServer := appmcp.NewMCPServer(cfg, log)
+	mcpServer, err := appmcp.NewMCPServer(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = mcpServer.Close() }()
 	result, err := mcpServer.InvokeTool(ctx, args[0], toolArgs)
 	if err != nil {
 		return err
@@ -340,10 +363,16 @@ func renderToolResult(result *mcptypes.CallToolResult) string {
 	if result == nil {
 		return ""
 	}
+	if result.StructuredContent != nil {
+		data, err := json.Marshal(result.StructuredContent)
+		if err == nil {
+			return string(data)
+		}
+	}
 
 	parts := make([]string, 0, len(result.Content))
 	for _, content := range result.Content {
-		if text, ok := mcptypes.AsTextContent(content); ok {
+		if text, ok := content.(*mcptypes.TextContent); ok {
 			parts = append(parts, text.Text)
 			continue
 		}
@@ -419,6 +448,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		Repo:       repo,
 		APIBaseURL: cfg.APIBaseURL,
 		UploadURL:  cfg.UploadURL,
+		RetryMax:   cfg.RetryMax,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create GitHub client: %w", err)
@@ -472,6 +502,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 func Execute() {
 	// Add git info to version
 	version = getVersion()
+	rootCmd.Version = version
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
@@ -484,6 +515,9 @@ func getVersion() string {
 	if ok {
 		return buildInfo
 	}
+	if version != "" && version != "dev" {
+		return version
+	}
 
 	// Try to get from git
 	if dir, err := os.Getwd(); err == nil {
@@ -491,7 +525,7 @@ func getVersion() string {
 		if _, statErr := os.Stat(gitDir); statErr == nil {
 			gitCmd := exec.Command("git", "describe", "--tags", "--always")
 			if output, err := gitCmd.Output(); err == nil {
-				return string(output[:len(output)-1])
+				return strings.TrimSpace(string(output))
 			}
 		}
 	}

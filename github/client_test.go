@@ -1410,6 +1410,37 @@ func TestDownloadArtifact_DefaultOutputPath(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestDownloadArtifact_RootConfinementAndExplicitOverwrite(t *testing.T) {
+	zipData := makeArtifactZIP(t, map[string]string{"fresh.txt": "new"})
+	_, client := setupArtifactServer(t, "test-owner", "test-repo", 123, "safe-artifact", zipData)
+	root := t.TempDir()
+	destination := filepath.Join(root, "artifact.zip")
+	require.NoError(t, os.WriteFile(destination, []byte("original"), 0600))
+
+	_, err := client.DownloadArtifactWithOptions(context.Background(), 123, ArtifactDownloadOptions{
+		Root: root, OutputPath: "artifact.zip",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+	original, readErr := os.ReadFile(destination)
+	require.NoError(t, readErr)
+	assert.Equal(t, []byte("original"), original)
+
+	result, err := client.DownloadArtifactWithOptions(context.Background(), 123, ArtifactDownloadOptions{
+		Root: root, OutputPath: "artifact.zip", Overwrite: true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, destination, result.SavedPath)
+	saved, readErr := os.ReadFile(destination)
+	require.NoError(t, readErr)
+	assert.Equal(t, zipData, saved)
+
+	_, err = client.DownloadArtifactWithOptions(context.Background(), 123, ArtifactDownloadOptions{
+		Root: root, OutputPath: "../escape.zip",
+	})
+	assert.ErrorContains(t, err, "must stay beneath artifact root")
+}
+
 // Tests for DiagnoseFailure functionality
 
 func TestErrorPatterns(t *testing.T) {

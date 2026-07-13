@@ -22,6 +22,8 @@ token: test-token
 repo_owner: test-owner
 repo_name: test-repo
 log_level: debug
+retry_max: 5
+artifact_root: /tmp/artifacts
 `
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
@@ -33,6 +35,8 @@ log_level: debug
 	assert.Equal(t, "test-owner", cfg.RepoOwner)
 	assert.Equal(t, "test-repo", cfg.RepoName)
 	assert.Equal(t, "debug", cfg.LogLevel)
+	assert.Equal(t, 5, cfg.RetryMax)
+	assert.Equal(t, "/tmp/artifacts", cfg.ArtifactRoot)
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -84,11 +88,16 @@ func TestLoad_DefaultValues(t *testing.T) {
 
 func TestConfig_Validate(t *testing.T) {
 	originalProvider := keychainTokenProvider
+	originalGHProvider := ghTokenProvider
 	keychainTokenProvider = func() (string, error) {
 		return "", errors.New("no token in test keychain")
 	}
+	ghTokenProvider = func() (string, error) {
+		return "", errors.New("not logged in during test")
+	}
 	t.Cleanup(func() {
 		keychainTokenProvider = originalProvider
+		ghTokenProvider = originalGHProvider
 	})
 
 	tests := []struct {

@@ -23,7 +23,8 @@ func TestETagCacheTransportRevalidatesWithoutServingStaleData(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &http.Client{Transport: NewETagCacheTransport(nil)}
+	transport := NewETagCacheTransport(nil)
+	client := &http.Client{Transport: transport}
 	for range 2 {
 		resp, err := client.Get(server.URL)
 		require.NoError(t, err)
@@ -34,4 +35,5 @@ func TestETagCacheTransportRevalidatesWithoutServingStaleData(t *testing.T) {
 		require.Equal(t, `{"id":1}`, string(body))
 	}
 	require.Equal(t, int32(2), calls.Load())
+	require.Equal(t, ETagCacheStats{Hits: 1, Revalidations: 1, Stores: 1}, transport.Stats())
 }

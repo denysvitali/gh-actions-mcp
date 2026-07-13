@@ -11,6 +11,7 @@ import (
 )
 
 type Config struct {
+	ServerVersion string `mapstructure:"-"`
 	Token         string `mapstructure:"token"`
 	RepoOwner     string `mapstructure:"repo_owner"`
 	RepoName      string `mapstructure:"repo_name"`
@@ -18,6 +19,8 @@ type Config struct {
 	DefaultLimit  int    `mapstructure:"default_limit"`
 	DefaultLogLen int    `mapstructure:"default_log_len"`
 	PerPageLimit  int    `mapstructure:"per_page_limit"`
+	RetryMax      int    `mapstructure:"retry_max"`
+	ArtifactRoot  string `mapstructure:"artifact_root"`
 	DefaultFormat string `mapstructure:"default_format"` // "minimal", "compact", "full"
 	// APIBaseURL overrides the GitHub API base URL. Useful for GitHub
 	// Enterprise or a reverse proxy (e.g. "http://gh-proxy:8080/api/").
@@ -53,6 +56,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("default_limit", 10)
 	v.SetDefault("default_log_len", 100)
 	v.SetDefault("per_page_limit", 50)
+	v.SetDefault("retry_max", 3)
+	v.SetDefault("artifact_root", ".")
 	v.SetDefault("default_format", "compact")
 
 	// Environment variables - support both GITHUB_* and GH_* prefixes
@@ -64,6 +69,8 @@ func Load(configPath string) (*Config, error) {
 	_ = v.BindEnv("default_limit", "GITHUB_DEFAULT_LIMIT", "GH_DEFAULT_LIMIT")
 	_ = v.BindEnv("default_log_len", "GITHUB_DEFAULT_LOG_LEN", "GH_DEFAULT_LOG_LEN")
 	_ = v.BindEnv("per_page_limit", "GITHUB_PER_PAGE_LIMIT", "GH_PER_PAGE_LIMIT")
+	_ = v.BindEnv("retry_max", "GITHUB_RETRY_MAX", "GH_RETRY_MAX")
+	_ = v.BindEnv("artifact_root", "GITHUB_ARTIFACT_ROOT", "GH_ARTIFACT_ROOT")
 	_ = v.BindEnv("default_format", "GITHUB_DEFAULT_FORMAT", "GH_DEFAULT_FORMAT")
 	_ = v.BindEnv("api_base_url", "GITHUB_API_BASE_URL", "GH_API_BASE_URL")
 	_ = v.BindEnv("upload_url", "GITHUB_UPLOAD_URL", "GH_UPLOAD_URL")

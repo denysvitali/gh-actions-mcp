@@ -17,6 +17,14 @@ repo_name: repo
 # Log level: debug, info, warn, error
 log_level: info
 
+# Retry safe GitHub API reads after transient failures or rate limits.
+# Set to -1 to disable retries. Env: GITHUB_RETRY_MAX / GH_RETRY_MAX
+retry_max: 3
+
+# Directory that download_artifact is allowed to write beneath.
+# Env: GITHUB_ARTIFACT_ROOT / GH_ARTIFACT_ROOT
+artifact_root: .
+
 # Optional: route API calls through a GitHub Enterprise server or a reverse
 # proxy such as gh-proxy. Must end with a trailing slash. When set, the token
 # above should be the proxy's consumer token (not a GitHub PAT).
