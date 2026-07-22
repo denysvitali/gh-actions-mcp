@@ -18,9 +18,9 @@ func TestParseActionsURL(t *testing.T) {
 	}{
 		{
 			name:      "run URL",
-			url:       "https://github.com/denysvitali/gps-tracker-tr003-v2/actions/runs/21662021288",
+			url:       "https://github.com/denysvitali/gh-actions-mcp/actions/runs/21662021288",
 			wantOwner: "denysvitali",
-			wantRepo:  "gps-tracker-tr003-v2",
+			wantRepo:  "gh-actions-mcp",
 			wantRunID: 21662021288,
 			wantJobID: 0,
 			wantIsJob: false,
@@ -28,9 +28,9 @@ func TestParseActionsURL(t *testing.T) {
 		},
 		{
 			name:      "job URL",
-			url:       "https://github.com/denysvitali/gps-tracker-tr003-v2/actions/runs/21662021288/job/62449039965",
+			url:       "https://github.com/denysvitali/gh-actions-mcp/actions/runs/21662021288/job/62449039965",
 			wantOwner: "denysvitali",
-			wantRepo:  "gps-tracker-tr003-v2",
+			wantRepo:  "gh-actions-mcp",
 			wantRunID: 21662021288,
 			wantJobID: 62449039965,
 			wantIsJob: true,
@@ -38,9 +38,9 @@ func TestParseActionsURL(t *testing.T) {
 		},
 		{
 			name:      "run URL with trailing slash",
-			url:       "https://github.com/denysvitali/gps-tracker-tr003-v2/actions/runs/21662021288/",
+			url:       "https://github.com/denysvitali/gh-actions-mcp/actions/runs/21662021288/",
 			wantOwner: "denysvitali",
-			wantRepo:  "gps-tracker-tr003-v2",
+			wantRepo:  "gh-actions-mcp",
 			wantRunID: 21662021288,
 			wantJobID: 0,
 			wantIsJob: false,
@@ -48,9 +48,9 @@ func TestParseActionsURL(t *testing.T) {
 		},
 		{
 			name:      "job URL with trailing slash",
-			url:       "https://github.com/denysvitali/gps-tracker-tr003-v2/actions/runs/21662021288/job/62449039965/",
+			url:       "https://github.com/denysvitali/gh-actions-mcp/actions/runs/21662021288/job/62449039965/",
 			wantOwner: "denysvitali",
-			wantRepo:  "gps-tracker-tr003-v2",
+			wantRepo:  "gh-actions-mcp",
 			wantRunID: 21662021288,
 			wantJobID: 62449039965,
 			wantIsJob: true,

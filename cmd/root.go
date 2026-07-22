@@ -263,7 +263,7 @@ Examples:
   gh-actions-mcp logs 21662021288
 
   # Get logs from a URL
-  gh-actions-mcp logs https://github.com/denysvitali/gps-tracker-tr003-v2/actions/runs/21662021288/job/62449039965
+  gh-actions-mcp logs https://github.com/denysvitali/gh-actions-mcp/actions/runs/21662021288/job/62449039965
 
   # Filter for specific text
   gh-actions-mcp logs 21662021288 --search "OTA task started"
@@ -443,12 +443,13 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 	// Create GitHub client
 	client, err := github.NewClientWithOptions(github.ClientOptions{
-		Token:      cfg.Token,
-		Owner:      owner,
-		Repo:       repo,
-		APIBaseURL: cfg.APIBaseURL,
-		UploadURL:  cfg.UploadURL,
-		RetryMax:   cfg.RetryMax,
+		Token:        cfg.Token,
+		Owner:        owner,
+		Repo:         repo,
+		APIBaseURL:   cfg.APIBaseURL,
+		UploadURL:    cfg.UploadURL,
+		RetryMax:     cfg.RetryMax,
+		AuthUsername: cfg.AuthUsername,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create GitHub client: %w", err)

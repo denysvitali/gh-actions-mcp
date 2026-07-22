@@ -132,6 +132,10 @@ type ClientOptions struct {
 	// transient or rate-limit errors. Zero uses the default; a negative value
 	// disables retries.
 	RetryMax int
+	// AuthUsername, when non-empty, switches authentication from a Bearer
+	// token to HTTP Basic auth (username:token). This is required by some
+	// reverse proxies (e.g. gh-proxy) that do not accept Bearer tokens.
+	AuthUsername string
 }
 
 // NewClientWithOptions creates a new GitHub client using the provided options.
@@ -145,11 +149,27 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	}
 	retry := NewRetryTransport(nil, retryMax)
 	cache := NewETagCacheTransport(retry)
-	hc := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: cache,
+	var hc *http.Client
+	var gh *github.Client
+	if opts.AuthUsername != "" {
+		// HTTP Basic auth (required by some reverse proxies like gh-proxy).
+		basic := &github.BasicAuthTransport{
+			Username:  opts.AuthUsername,
+			Password:  opts.Token,
+			Transport: cache,
+		}
+		hc = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: basic,
+		}
+		gh = github.NewClient(hc)
+	} else {
+		hc = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: cache,
+		}
+		gh = github.NewClient(hc).WithAuthToken(opts.Token)
 	}
-	gh := github.NewClient(hc).WithAuthToken(opts.Token)
 	if opts.APIBaseURL != "" {
 		// Set BaseURL directly rather than via WithEnterpriseURLs, which
 		// would auto-append "api/v3/" and break non-Enterprise proxies

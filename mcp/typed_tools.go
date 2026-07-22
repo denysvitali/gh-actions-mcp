@@ -36,6 +36,7 @@ func (s *MCPServer) clientFromInput(input repoInput) (*github.Client, string, st
 	client, err := github.NewClientWithOptions(github.ClientOptions{
 		Token: s.config.Token, Owner: owner, Repo: repo, PerPageLimit: perPage,
 		APIBaseURL: s.config.APIBaseURL, UploadURL: s.config.UploadURL, RetryMax: s.config.RetryMax,
+		AuthUsername: s.config.AuthUsername,
 	})
 	return client, owner, repo, err
 }

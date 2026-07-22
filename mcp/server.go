@@ -263,6 +263,7 @@ func NewMCPServer(cfg *config.Config, log *logrus.Logger) (*MCPServer, error) {
 		APIBaseURL:   cfg.APIBaseURL,
 		UploadURL:    cfg.UploadURL,
 		RetryMax:     cfg.RetryMax,
+		AuthUsername: cfg.AuthUsername,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create GitHub client: %w", err)

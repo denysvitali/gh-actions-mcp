@@ -22,6 +22,10 @@ type Config struct {
 	RetryMax      int    `mapstructure:"retry_max"`
 	ArtifactRoot  string `mapstructure:"artifact_root"`
 	DefaultFormat string `mapstructure:"default_format"` // "minimal", "compact", "full"
+	// AuthUsername, when non-empty, switches from Bearer token auth to
+	// HTTP Basic auth (username:token). Required by some reverse proxies
+	// (e.g. gh-proxy). Env: GITHUB_AUTH_USERNAME / GH_AUTH_USERNAME.
+	AuthUsername string `mapstructure:"auth_username"`
 	// APIBaseURL overrides the GitHub API base URL. Useful for GitHub
 	// Enterprise or a reverse proxy (e.g. "http://gh-proxy:8080/api/").
 	// Must end with a trailing slash.
@@ -72,6 +76,7 @@ func Load(configPath string) (*Config, error) {
 	_ = v.BindEnv("retry_max", "GITHUB_RETRY_MAX", "GH_RETRY_MAX")
 	_ = v.BindEnv("artifact_root", "GITHUB_ARTIFACT_ROOT", "GH_ARTIFACT_ROOT")
 	_ = v.BindEnv("default_format", "GITHUB_DEFAULT_FORMAT", "GH_DEFAULT_FORMAT")
+	_ = v.BindEnv("auth_username", "GITHUB_AUTH_USERNAME", "GH_AUTH_USERNAME")
 	_ = v.BindEnv("api_base_url", "GITHUB_API_BASE_URL", "GH_API_BASE_URL")
 	_ = v.BindEnv("upload_url", "GITHUB_UPLOAD_URL", "GH_UPLOAD_URL")
 
