@@ -11,7 +11,7 @@ import (
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
-	ghapi "github.com/google/go-github/v69/github"
+	ghapi "github.com/google/go-github/v89/github"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"

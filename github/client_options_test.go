@@ -86,7 +86,7 @@ func TestNewClientWithOptions_UploadURLDefaultsToAPIBaseURL(t *testing.T) {
 		APIBaseURL: "http://proxy.example/api/",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "http://proxy.example/api/", client.gh.UploadURL.String())
+	assert.Equal(t, "http://proxy.example/api/", client.gh.UploadURL())
 }
 
 func TestNewClientWithOptions_ExplicitUploadURL(t *testing.T) {
@@ -98,7 +98,7 @@ func TestNewClientWithOptions_ExplicitUploadURL(t *testing.T) {
 		UploadURL:  "http://proxy.example/api/uploads/",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "http://proxy.example/api/uploads/", client.gh.UploadURL.String())
+	assert.Equal(t, "http://proxy.example/api/uploads/", client.gh.UploadURL())
 }
 
 func TestNewClientWithOptions_InvalidBaseURL(t *testing.T) {

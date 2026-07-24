@@ -175,7 +175,9 @@ func (s *MCPServer) getRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s", s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get jobs for run %d", input.RunID), owner, repo))
 		}
-		return resultForFormat(jobs, input.Format), nil, nil
+		return resultForFormat(struct {
+			Jobs []*github.Job `json:"jobs"`
+		}{Jobs: jobs}, input.Format), nil, nil
 	case "logs":
 		return s.getRunLogsTyped(ctx, client, owner, repo, input)
 	case "log_files":
@@ -196,7 +198,9 @@ func (s *MCPServer) getRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, 
 			}
 			files = filtered
 		}
-		return resultForFormat(files, input.Format), nil, nil
+		return resultForFormat(struct {
+			Files []*github.LogFileInfo `json:"files"`
+		}{Files: files}, input.Format), nil, nil
 	case "log_sections":
 		var jobID int64
 		if input.JobID != nil {
@@ -206,13 +210,17 @@ func (s *MCPServer) getRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s", s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get log sections for run %d", input.RunID), owner, repo))
 		}
-		return resultForFormat(sections, input.Format), nil, nil
+		return resultForFormat(struct {
+			Sections []*github.LogSection `json:"sections"`
+		}{Sections: sections}, input.Format), nil, nil
 	case "artifacts":
 		artifacts, err := client.GetWorkflowRunArtifacts(ctx, input.RunID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s", s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get artifacts for run %d", input.RunID), owner, repo))
 		}
-		return resultForFormat(artifacts, input.Format), nil, nil
+		return resultForFormat(struct {
+			Artifacts []*github.Artifact `json:"artifacts"`
+		}{Artifacts: artifacts}, input.Format), nil, nil
 	case "artifact_content":
 		if input.ArtifactID == nil {
 			return nil, nil, fmt.Errorf("artifact_id is required for element=artifact_content")

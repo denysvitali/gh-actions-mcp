@@ -8,13 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	githubapi "github.com/google/go-github/v69/github"
+	githubapi "github.com/google/go-github/v89/github"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -230,31 +229,27 @@ func TestSetLogger(t *testing.T) {
 }
 
 func TestTokenIsSentInRequest(t *testing.T) {
-	// Capture request for inspection
 	var capturedReq *http.Request
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedReq = r
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total_count":0,"workflows":[]}`))
+	}))
+	defer ts.Close()
 
-	// Use a custom transport to capture the request
-	originalTransport := http.DefaultTransport
-	http.DefaultTransport = roundTripperFunc(func(req *http.Request) *http.Response {
-		capturedReq = req
-		// Return a mock response
-		return &http.Response{
-			StatusCode: 200,
-			Body:       http.NoBody,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}
+	client, err := NewClientWithOptions(ClientOptions{
+		Token:      "my-secret-token",
+		Owner:      "owner",
+		Repo:       "repo",
+		APIBaseURL: ts.URL + "/",
 	})
-	defer func() { http.DefaultTransport = originalTransport }()
+	require.NoError(t, err)
 
-	client := NewClient("my-secret-token", "owner", "repo")
-	_, _ = client.GetWorkflows(context.Background())
-
-	if capturedReq != nil {
-		t.Logf("Authorization header: %q", capturedReq.Header.Get("Authorization"))
-		assert.Equal(t, "Bearer my-secret-token", capturedReq.Header.Get("Authorization"))
-	} else {
-		t.Error("No request was captured")
-	}
+	workflows, err := client.GetWorkflows(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, workflows)
+	require.NotNil(t, capturedReq)
+	assert.Equal(t, "Bearer my-secret-token", capturedReq.Header.Get("Authorization"))
 }
 
 // Test error scenarios
@@ -1013,10 +1008,8 @@ func TestGetWorkflowJobLogs_RedirectPlainTextWithoutAuthHeader(t *testing.T) {
 	defer ts.Close()
 	redirectBase = ts.URL
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	assert.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,
@@ -1062,10 +1055,8 @@ func TestGetWorkflowJobLogs_RedirectZipStillWorks(t *testing.T) {
 	defer ts.Close()
 	redirectBase = ts.URL
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	assert.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,
@@ -1125,10 +1116,8 @@ func TestGetWorkflowJobLogsFromRunArchive_FiltersJobFolder(t *testing.T) {
 	defer ts.Close()
 	redirectBase = ts.URL
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,
@@ -1173,10 +1162,8 @@ func TestGetCheckRunsForRef_UsesWorkflowRunsNotChecksAPI(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	assert.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,
@@ -1268,10 +1255,8 @@ func setupArtifactServer(t *testing.T, owner, repo string, artifactID int64, art
 	t.Cleanup(ts.Close)
 	redirectBase = ts.URL
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,
@@ -1494,10 +1479,8 @@ func TestGetCheckRunAnnotationErrors(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 	client := &Client{owner: "owner", repo: "repo", gh: ghc}
 
 	assert.Equal(t, []string{"internal/build.go:42: Compile: undefined: Widget"}, client.getCheckRunAnnotationErrors(context.Background(), 200, 150))
@@ -1674,10 +1657,8 @@ func TestDiagnoseFailure_Integration(t *testing.T) {
 	defer ts.Close()
 	redirectBase = ts.URL
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,
@@ -1744,10 +1725,8 @@ func TestDiagnoseFailure_SuccessfulRun(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{owner: owner, repo: repo, gh: ghc, perPageLimit: 50}
 
@@ -1776,10 +1755,8 @@ func TestDiagnoseFailure_InProgressRun(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{owner: owner, repo: repo, gh: ghc, perPageLimit: 50}
 
@@ -2066,10 +2043,8 @@ func newTimingAnalysisTestClient(t *testing.T) (*Client, func()) {
 
 	ts := httptest.NewServer(mux)
 
-	ghc := githubapi.NewClient(ts.Client()).WithAuthToken("test-token")
-	baseURL, err := url.Parse(ts.URL + "/")
-	require.NoError(t, err)
-	ghc.BaseURL = baseURL
+		baseURL := ts.URL + "/"
+	ghc, err := githubapi.NewClient(githubapi.WithHTTPClient(ts.Client()), githubapi.WithAuthToken("test-token"), githubapi.WithURLs(&baseURL, nil)); require.NoError(t, err)
 
 	client := &Client{
 		owner:        owner,

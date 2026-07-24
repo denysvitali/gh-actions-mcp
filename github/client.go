@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/google/go-github/v69/github"
+	"github.com/google/go-github/v89/github"
 	"github.com/sirupsen/logrus"
 )
 
@@ -150,30 +150,30 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 	retry := NewRetryTransport(nil, retryMax)
 	cache := NewETagCacheTransport(retry)
 	var hc *http.Client
-	var gh *github.Client
+	var clientOpts []github.ClientOptionsFunc
 	if opts.AuthUsername != "" {
 		// HTTP Basic auth (required by some reverse proxies like gh-proxy).
+		// Credentials live in the transport, not as a bearer token.
 		basic := &github.BasicAuthTransport{
 			Username:  opts.AuthUsername,
 			Password:  opts.Token,
 			Transport: cache,
 		}
-		hc = &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: basic,
-		}
-		gh = github.NewClient(hc)
+		hc = basic.Client()
 	} else {
 		hc = &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: cache,
 		}
-		gh = github.NewClient(hc).WithAuthToken(opts.Token)
+		if opts.Token != "" {
+			clientOpts = append(clientOpts, github.WithAuthToken(opts.Token))
+		}
 	}
+	clientOpts = append(clientOpts, github.WithHTTPClient(hc))
 	if opts.APIBaseURL != "" {
-		// Set BaseURL directly rather than via WithEnterpriseURLs, which
-		// would auto-append "api/v3/" and break non-Enterprise proxies
-		// (e.g. gh-proxy, which expects "/api/repos/...").
+		// Use WithURLs rather than WithEnterpriseURLs; the latter auto-
+		// appends "api/v3/" and breaks non-Enterprise proxies (e.g. gh-proxy,
+		// which expects "/api/repos/...").
 		base, err := url.Parse(opts.APIBaseURL)
 		if err != nil {
 			return nil, fmt.Errorf("parse api_base_url: %w", err)
@@ -181,7 +181,6 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if !strings.HasSuffix(base.Path, "/") {
 			base.Path += "/"
 		}
-		gh.BaseURL = base
 		uploadStr := opts.UploadURL
 		if uploadStr == "" {
 			uploadStr = opts.APIBaseURL
@@ -193,7 +192,12 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		if !strings.HasSuffix(upload.Path, "/") {
 			upload.Path += "/"
 		}
-		gh.UploadURL = upload
+		baseURL, uploadURL := base.String(), upload.String()
+		clientOpts = append(clientOpts, github.WithURLs(&baseURL, &uploadURL))
+	}
+	gh, err := github.NewClient(clientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("create GitHub client: %w", err)
 	}
 	return &Client{
 		owner:        opts.Owner,
@@ -884,7 +888,7 @@ func (c *Client) TriggerWorkflow(ctx context.Context, workflowID string, ref str
 		return fmt.Errorf("failed to trigger workflow %s: %w", workflowID, err)
 	}
 
-	_, err = c.gh.Actions.CreateWorkflowDispatchEventByID(ctx, c.owner, c.repo, id, github.CreateWorkflowDispatchEventRequest{
+	_, _, err = c.gh.Actions.CreateWorkflowDispatchEventByID(ctx, c.owner, c.repo, id, github.CreateWorkflowDispatchEventRequest{
 		Ref: ref,
 	})
 	if err != nil {
