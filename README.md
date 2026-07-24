@@ -71,6 +71,28 @@ gh-actions-mcp infer-repo  # Shows inferred owner/repo
 gh-actions-mcp --token $GITHUB_TOKEN  # Uses inferred values
 ```
 
+### Git proxy auto-detection (gh-proxy)
+
+If your git config rewrites GitHub URLs through a reverse proxy with
+`url.<base>.insteadOf`, the server detects that and routes REST API calls
+through the same proxy — no configuration needed:
+
+```ini
+# ~/.gitconfig
+[url "http://user:password@gh-proxy.local/git/"]
+	insteadOf = https://github.com/
+```
+
+From this the server derives `api_base_url = http://gh-proxy.local/api/` and
+uses the embedded credentials as HTTP Basic auth (overriding any GitHub token,
+which a proxy would not accept anyway). Detection also reverses the rewrite
+when parsing remote URLs, so owner/repo inference works for proxied clones.
+
+Detection is skipped when `api_base_url` is already configured. Disable it
+with `--no-git-proxy-detect` or `git_proxy_detect: false` (env:
+`GH_GIT_PROXY_DETECT=false`). Credentials are never logged; remote URLs
+surfaced via MCP have passwords redacted.
+
 ## Usage
 
 ### Running as MCP Server

@@ -33,6 +33,11 @@ type Config struct {
 	// UploadURL overrides the GitHub upload URL. Defaults to APIBaseURL
 	// when empty.
 	UploadURL string `mapstructure:"upload_url"`
+	// GitProxyDetect enables deriving api_base_url and Basic-auth
+	// credentials from git's url.<proxy>.insteadOf rewrites (e.g. gh-proxy)
+	// when no api_base_url is configured. Defaults to true.
+	// Env: GITHUB_GIT_PROXY_DETECT / GH_GIT_PROXY_DETECT
+	GitProxyDetect bool `mapstructure:"git_proxy_detect"`
 }
 
 var log = logrus.New()
@@ -63,6 +68,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("retry_max", 3)
 	v.SetDefault("artifact_root", ".")
 	v.SetDefault("default_format", "compact")
+	v.SetDefault("git_proxy_detect", true)
 
 	// Environment variables - support both GITHUB_* and GH_* prefixes
 	// GITHUB_* prefix takes precedence over GH_* prefix for backward compatibility
@@ -79,6 +85,7 @@ func Load(configPath string) (*Config, error) {
 	_ = v.BindEnv("auth_username", "GITHUB_AUTH_USERNAME", "GH_AUTH_USERNAME")
 	_ = v.BindEnv("api_base_url", "GITHUB_API_BASE_URL", "GH_API_BASE_URL")
 	_ = v.BindEnv("upload_url", "GITHUB_UPLOAD_URL", "GH_UPLOAD_URL")
+	_ = v.BindEnv("git_proxy_detect", "GITHUB_GIT_PROXY_DETECT", "GH_GIT_PROXY_DETECT")
 
 	// Config file. We support two modes:
 	//   1) Explicit path via --config / configPath: load that single file.
@@ -129,8 +136,40 @@ func Load(configPath string) (*Config, error) {
 		cfg.Token = token
 	}
 
+	cfg.splitProxyCredentials()
+
 	log.Debugf("Loaded config: owner=%s, repo=%s", cfg.RepoOwner, cfg.RepoName)
 	return &cfg, nil
+}
+
+// splitProxyCredentials handles tokens supplied as "username.token" against a
+// reverse proxy that requires HTTP Basic auth (gh-proxy). Real GitHub tokens
+// carry a known prefix and never need splitting, so this only applies when a
+// custom api_base_url is configured, no auth_username was given, and the token
+// does not look like a GitHub-issued token.
+func (c *Config) splitProxyCredentials() {
+	if c.APIBaseURL == "" || c.AuthUsername != "" || c.Token == "" {
+		return
+	}
+	for _, prefix := range []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"} {
+		if strings.HasPrefix(c.Token, prefix) {
+			return
+		}
+	}
+	user, token, found := strings.Cut(c.Token, ".")
+	if !found || user == "" || token == "" {
+		return
+	}
+	c.AuthUsername = user
+	c.Token = token
+	log.Debugf("Split proxy credentials from token: username=%s", user)
+}
+
+// SplitProxyCredentials is the exported variant of splitProxyCredentials for
+// callers that set APIBaseURL after Load returned (e.g. CLI flag overrides or
+// git proxy detection ordering).
+func (c *Config) SplitProxyCredentials() {
+	c.splitProxyCredentials()
 }
 
 func (c *Config) Validate() error {

@@ -34,6 +34,8 @@ var (
 	mcpHTTPTLSKey  string
 	mcpHTTPOrigins []string
 	mcpHTTPMaxBody int64
+	// noGitProxyDetect disables deriving api_base_url from git insteadOf rules.
+	noGitProxyDetect bool
 )
 
 // Logs command flags
@@ -74,6 +76,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&mcpHTTPTLSKey, "http-tls-key", "", "TLS private key for Streamable HTTP")
 	rootCmd.PersistentFlags().StringSliceVar(&mcpHTTPOrigins, "http-allowed-origin", nil, "trusted browser origin (repeatable)")
 	rootCmd.PersistentFlags().Int64Var(&mcpHTTPMaxBody, "http-max-body", 1<<20, "maximum Streamable HTTP request body in bytes")
+	rootCmd.PersistentFlags().BoolVar(&noGitProxyDetect, "no-git-proxy-detect", false, "do not derive the API base URL from git url.<proxy>.insteadOf rules")
 
 	// Infer repo from git origin
 	rootCmd.AddCommand(inferCmd)
@@ -196,6 +199,19 @@ func loadConfigWithOptions(requireRepo bool) (*config.Config, error) {
 		}
 	}
 
+	// Credentials embedded in the proxy rewrite can be the token. Run before
+	// and after detection: detection may set the API base URL (enabling the
+	// split), and the split may add a username that detection must respect.
+	cfg.SplitProxyCredentials()
+
+	// Route API calls through the same proxy git uses, if any. Must run
+	// before ValidateToken: the proxy credentials can be the only token.
+	if noGitProxyDetect {
+		cfg.GitProxyDetect = false
+	}
+	applyGitProxyDetection(cfg)
+	cfg.SplitProxyCredentials()
+
 	if err := cfg.ValidateToken(); err != nil {
 		return nil, err
 	}
@@ -223,6 +239,43 @@ func configureLogLevel() error {
 	}
 	log.SetLevel(level)
 	return nil
+}
+
+// applyGitProxyDetection derives the API base URL (and HTTP Basic credentials)
+// from git's url.<proxy>.insteadOf rewrites, so that a machine whose git only
+// reaches github.com through a proxy such as gh-proxy also reaches the REST
+// API through it. Explicit configuration always wins; credentials are never
+// logged.
+func applyGitProxyDetection(cfg *config.Config) {
+	if !cfg.GitProxyDetect {
+		log.Debugf("Git proxy detection disabled")
+		return
+	}
+	if cfg.APIBaseURL != "" {
+		log.Debugf("api_base_url already set, skipping git proxy detection")
+		return
+	}
+
+	proxy, err := github.DetectProxy("")
+	if err != nil {
+		log.Debugf("Could not read git config for proxy detection: %v", err)
+		return
+	}
+	if proxy == nil {
+		return
+	}
+
+	cfg.APIBaseURL = proxy.APIBaseURL
+	switch {
+	case cfg.AuthUsername != "":
+		// The user configured Basic auth themselves; keep their credentials.
+	case proxy.HasCredentials():
+		// A GitHub PAT is useless against a proxy that authenticates its own
+		// consumers, so the credentials from git config take precedence.
+		cfg.AuthUsername = proxy.Username
+		cfg.Token = proxy.Password
+	}
+	log.Infof("Using GitHub proxy from git config: %s", proxy)
 }
 
 func inferRepoFromGit(cfg *config.Config) error {

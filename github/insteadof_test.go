@@ -41,9 +41,9 @@ func TestApplyReverseInsteadOf(t *testing.T) {
 			expected: "https://github.com/owner/repo.git",
 		},
 		{
-			name: "empty rules returns input unchanged",
-			url:  "https://github.com/owner/repo.git",
-			rules: []insteadOfRule{},
+			name:     "empty rules returns input unchanged",
+			url:      "https://github.com/owner/repo.git",
+			rules:    []insteadOfRule{},
 			expected: "https://github.com/owner/repo.git",
 		},
 		{
@@ -81,24 +81,76 @@ func TestApplyReverseInsteadOf(t *testing.T) {
 	}
 }
 
-func TestParseInsteadOfRules(t *testing.T) {
-	input := "url.http://proxy/git/.insteadof https://github.com/\n" +
-		"url.git@proxy:.insteadof git@github.com:\n" +
-		"url.http://other/.insteadof https://example.com/\n" +
-		"\n" +
-		"malformed-line\n"
+func TestApplyInsteadOf_Forward(t *testing.T) {
+	rules := []insteadOfRule{
+		{base: "http://proxy/git/", value: "https://github.com/"},
+		{base: "http://proxy/git/denysvitali/", value: "https://github.com/denysvitali/"},
+		{base: "ssh://git@push-proxy/", value: "https://github.com/", push: true},
+	}
 
-	rules := parseInsteadOfRules(input)
-	require.Len(t, rules, 3)
+	tests := []struct {
+		name     string
+		url      string
+		forPush  bool
+		expected string
+	}{
+		{
+			name:     "longest matching value wins",
+			url:      "https://github.com/denysvitali/repo.git",
+			expected: "http://proxy/git/denysvitali/repo.git",
+		},
+		{
+			name:     "shorter prefix used when no longer match",
+			url:      "https://github.com/other/repo.git",
+			expected: "http://proxy/git/other/repo.git",
+		},
+		{
+			name:     "push rules ignored for fetch",
+			url:      "https://github.com/x/y",
+			expected: "http://proxy/git/x/y",
+		},
+		{
+			name:     "push rule preferred when pushing",
+			url:      "https://github.com/x/y",
+			forPush:  true,
+			expected: "ssh://git@push-proxy/x/y",
+		},
+		{
+			name:     "unrelated URL untouched",
+			url:      "https://gitlab.com/x/y",
+			expected: "https://gitlab.com/x/y",
+		},
+	}
 
-	assert.Equal(t, "http://proxy/git/", rules[0].base)
-	assert.Equal(t, "https://github.com/", rules[0].value)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, applyInsteadOf(tt.url, rules, tt.forPush))
+		})
+	}
+}
 
-	assert.Equal(t, "git@proxy:", rules[1].base)
-	assert.Equal(t, "git@github.com:", rules[1].value)
+func TestApplyReverseInsteadOf_LongestMatchWins(t *testing.T) {
+	rules := []insteadOfRule{
+		{base: "http://proxy/", value: "https://example.com/"},
+		{base: "http://proxy/git/", value: "https://github.com/"},
+	}
 
-	assert.Equal(t, "http://other/", rules[2].base)
-	assert.Equal(t, "https://example.com/", rules[2].value)
+	assert.Equal(t,
+		"https://github.com/owner/repo.git",
+		applyReverseInsteadOf("http://proxy/git/owner/repo.git", rules),
+	)
+}
+
+func TestApplyReverseInsteadOf_FetchRulePreferredOverPush(t *testing.T) {
+	rules := []insteadOfRule{
+		{base: "http://proxy/git/", value: "https://push.example/", push: true},
+		{base: "http://proxy/git/", value: "https://github.com/"},
+	}
+
+	assert.Equal(t,
+		"https://github.com/owner/repo.git",
+		applyReverseInsteadOf("http://proxy/git/owner/repo.git", rules),
+	)
 }
 
 func TestReverseInsteadOf_WithTemporaryGitConfig(t *testing.T) {

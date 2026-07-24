@@ -31,3 +31,9 @@ artifact_root: .
 # Env vars: GITHUB_API_BASE_URL / GH_API_BASE_URL, GITHUB_UPLOAD_URL / GH_UPLOAD_URL
 # api_base_url: http://gh-proxy:8080/api/
 # upload_url: http://gh-proxy:8080/api/uploads/
+
+# Optional: derive api_base_url and Basic-auth credentials automatically from
+# git's url.<proxy>.insteadOf rewrite rules (gh-proxy). Enabled by default;
+# ignored when api_base_url is set above.
+# Env vars: GITHUB_GIT_PROXY_DETECT / GH_GIT_PROXY_DETECT
+# git_proxy_detect: true

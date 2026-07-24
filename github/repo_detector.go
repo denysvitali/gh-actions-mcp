@@ -263,7 +263,9 @@ func (d *RepoDetector) Detect() (*RepoInfo, error) {
 		Repo:   repoName,
 		Source: source,
 		Cached: false,
-		RawURL: remoteURL,
+		// Remotes rewritten through a proxy can embed credentials; RawURL is
+		// surfaced to MCP clients, so never expose the password.
+		RawURL: RedactURL(remoteURL),
 	}
 
 	// Cache the result

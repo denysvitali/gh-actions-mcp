@@ -419,3 +419,95 @@ func TestIsAuthenticationError(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_GitProxyDetectDefaultsToTrue(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(""), 0644))
+
+	cfg, err := Load(configPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.GitProxyDetect)
+}
+
+func TestLoad_GitProxyDetectFromConfigAndEnv(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("git_proxy_detect: false\n"), 0644))
+
+	cfg, err := Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, cfg.GitProxyDetect)
+
+	t.Setenv("GITHUB_GIT_PROXY_DETECT", "true")
+	cfg, err = Load(configPath)
+	require.NoError(t, err)
+	assert.True(t, cfg.GitProxyDetect)
+}
+
+func TestLoad_APIBaseURLEnv(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(""), 0644))
+
+	t.Setenv("GH_API_BASE_URL", "http://gh-proxy.local/api/")
+	t.Setenv("GH_UPLOAD_URL", "http://gh-proxy.local/api/uploads/")
+
+	cfg, err := Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "http://gh-proxy.local/api/", cfg.APIBaseURL)
+	assert.Equal(t, "http://gh-proxy.local/api/uploads/", cfg.UploadURL)
+}
+
+func TestSplitProxyCredentials(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       Config
+		wantUser  string
+		wantToken string
+	}{
+		{
+			name:      "no api base url leaves token alone",
+			cfg:       Config{Token: "user.token"},
+			wantToken: "user.token",
+		},
+		{
+			name:      "explicit auth username wins",
+			cfg:       Config{APIBaseURL: "http://proxy/api/", AuthUsername: "me", Token: "user.token"},
+			wantUser:  "me",
+			wantToken: "user.token",
+		},
+		{
+			name:      "github PAT is never split",
+			cfg:       Config{APIBaseURL: "http://proxy/api/", Token: "ghp_abc.def"},
+			wantToken: "ghp_abc.def",
+		},
+		{
+			name:      "fine-grained PAT is never split",
+			cfg:       Config{APIBaseURL: "http://proxy/api/", Token: "github_pat_abc.def"},
+			wantToken: "github_pat_abc.def",
+		},
+		{
+			name:      "proxy credential is split on first dot",
+			cfg:       Config{APIBaseURL: "http://proxy/api/", Token: "workspace.s3cr3t.with.dots"},
+			wantUser:  "workspace",
+			wantToken: "s3cr3t.with.dots",
+		},
+		{
+			name:      "token without dot is left alone",
+			cfg:       Config{APIBaseURL: "http://proxy/api/", Token: "nodotshere"},
+			wantToken: "nodotshere",
+		},
+		{
+			name:      "empty user side is left alone",
+			cfg:       Config{APIBaseURL: "http://proxy/api/", Token: ".onlytoken"},
+			wantToken: ".onlytoken",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			cfg.splitProxyCredentials()
+			assert.Equal(t, tt.wantUser, cfg.AuthUsername)
+			assert.Equal(t, tt.wantToken, cfg.Token)
+		})
+	}
+}

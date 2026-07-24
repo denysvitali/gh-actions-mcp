@@ -1,8 +1,6 @@
 package github
 
 import (
-	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -12,6 +10,8 @@ import (
 type insteadOfRule struct {
 	base  string
 	value string
+	// push marks rules coming from pushInsteadOf rather than insteadOf.
+	push bool
 }
 
 // ReverseInsteadOf queries git config for url.<base>.insteadOf rules and
@@ -25,57 +25,61 @@ func ReverseInsteadOf(remoteURL string) (string, error) {
 	return applyReverseInsteadOf(remoteURL, rules), nil
 }
 
-// loadInsteadOfRules shells out to git config to collect all
-// url.<base>.insteadOf entries from the usual config files.
+// loadInsteadOfRules reads all url.<base>.insteadOf and
+// url.<base>.pushInsteadOf entries from the git config files that apply to
+// the current working directory.
 func loadInsteadOfRules() ([]insteadOfRule, error) {
-	cmd := exec.Command("git", "config", "--includes", "--get-regexp", `^url\..*\.insteadof$`)
-	output, err := cmd.Output()
+	entries, err := loadGitConfigEntries("")
 	if err != nil {
-		// Exit code 1 means no matching entries were found.
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read git insteadOf rules: %w", err)
+		return nil, err
 	}
-	return parseInsteadOfRules(string(output)), nil
-}
-
-// parseInsteadOfRules parses the output of
-// "git config --get-regexp '^url\..*\.insteadof$'".
-// Each line has the form "url.<base>.insteadof <value>".
-func parseInsteadOfRules(output string) []insteadOfRule {
-	var rules []insteadOfRule
-	for line := range strings.SplitSeq(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		key, value, ok := strings.Cut(line, " ")
-		if !ok {
-			continue
-		}
-		if !strings.HasPrefix(key, "url.") || !strings.HasSuffix(key, ".insteadof") {
-			continue
-		}
-
-		base := strings.TrimPrefix(key, "url.")
-		base = strings.TrimSuffix(base, ".insteadof")
-		rules = append(rules, insteadOfRule{base: base, value: value})
-	}
-	return rules
+	return entriesToInsteadOfRules(entries), nil
 }
 
 // applyReverseInsteadOf applies the reverse of the given insteadOf rules to
-// remoteURL. The first matching rule wins.
+// remoteURL. Mirroring git's forward behaviour, the longest matching rewrite
+// target wins; ties are broken in favour of fetch rules over pushInsteadOf.
 func applyReverseInsteadOf(remoteURL string, rules []insteadOfRule) string {
-	for _, rule := range rules {
-		if rule.base == "" {
+	var match *insteadOfRule
+	for i := range rules {
+		rule := &rules[i]
+		if rule.base == "" || !strings.HasPrefix(remoteURL, rule.base) {
 			continue
 		}
-		if rest, ok := strings.CutPrefix(remoteURL, rule.base); ok {
-			return rule.value + rest
+		if match == nil ||
+			len(rule.base) > len(match.base) ||
+			(len(rule.base) == len(match.base) && match.push && !rule.push) {
+			match = rule
 		}
 	}
-	return remoteURL
+	if match == nil {
+		return remoteURL
+	}
+	return match.value + strings.TrimPrefix(remoteURL, match.base)
+}
+
+// applyInsteadOf performs git's forward rewrite: the longest matching
+// insteadOf value is replaced by its rewrite target. pushInsteadOf rules are
+// only considered when forPush is true.
+func applyInsteadOf(remoteURL string, rules []insteadOfRule, forPush bool) string {
+	var match *insteadOfRule
+	for i := range rules {
+		rule := &rules[i]
+		if rule.value == "" || !strings.HasPrefix(remoteURL, rule.value) {
+			continue
+		}
+		if rule.push && !forPush {
+			continue
+		}
+		// git prefers pushInsteadOf over insteadOf when pushing.
+		if match == nil ||
+			len(rule.value) > len(match.value) ||
+			(len(rule.value) == len(match.value) && forPush && rule.push && !match.push) {
+			match = rule
+		}
+	}
+	if match == nil {
+		return remoteURL
+	}
+	return match.base + strings.TrimPrefix(remoteURL, match.value)
 }
