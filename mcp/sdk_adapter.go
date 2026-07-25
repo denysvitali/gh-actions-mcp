@@ -154,7 +154,7 @@ type listWorkflowsOutput struct {
 
 type listRunsInput struct {
 	repoInput
-	WorkflowID   *int64 `json:"workflow_id,omitempty"`
+	WorkflowID   any    `json:"workflow_id,omitempty"`
 	Branch       string `json:"branch,omitempty"`
 	Status       string `json:"status,omitempty"`
 	Conclusion   string `json:"conclusion,omitempty"`
@@ -251,13 +251,16 @@ type downloadArtifactInput struct {
 	Overwrite  bool   `json:"overwrite,omitempty"`
 }
 
-func (toolBuilder) property(name, typ string, options ...toolOption) toolOption {
+func (toolBuilder) property(name string, typ any, options ...toolOption) toolOption {
 	return func(target any) {
 		d, ok := target.(*toolDefinition)
 		if !ok {
 			return
 		}
-		property := map[string]any{"type": typ}
+		property := map[string]any{}
+		if typ != nil {
+			property["type"] = typ
+		}
 		definition := &propertyDefinition{property: property}
 		for _, option := range options {
 			option(definition)
@@ -272,6 +275,14 @@ func (toolBuilder) property(name, typ string, options ...toolOption) toolOption 
 
 func (b toolBuilder) WithString(name string, options ...toolOption) toolOption {
 	return b.property(name, "string", options...)
+}
+
+func (b toolBuilder) WithStringOrInteger(name string, options ...toolOption) toolOption {
+	return b.property(name, []string{"string", "integer"}, options...)
+}
+
+func (b toolBuilder) WithAny(name string, options ...toolOption) toolOption {
+	return b.property(name, nil, options...)
 }
 
 func (b toolBuilder) WithNumber(name string, options ...toolOption) toolOption {

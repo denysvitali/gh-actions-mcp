@@ -391,7 +391,7 @@ The tool will return a timeout error if the workflow doesn't complete within the
   "name": "list_runs",
   "arguments": {
     "workflow_id": "CI",
-    "limit": 20
+    "per_page": 20
   }
 }
 ```

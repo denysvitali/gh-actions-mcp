@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/denysvitali/gh-actions-mcp/github"
@@ -82,17 +84,39 @@ func (s *MCPServer) listRunsTyped(ctx context.Context, _ *sdkmcp.CallToolRequest
 	if perPage <= 0 {
 		perPage = s.getLimit()
 	}
+
+	var workflowID *int64
+	if input.WorkflowID != nil {
+		selector, err := normalizeWorkflowIDSelector(input.WorkflowID)
+		if err != nil {
+			return nil, output, fmt.Errorf("invalid workflow_id: %w", err)
+		}
+		if selector != "" {
+			resolvedID, parseErr := github.ParseWorkflowID(selector)
+			if parseErr == nil {
+				workflowID = &resolvedID
+			} else {
+				var err error
+				resolvedID, _, err = client.ResolveWorkflowID(ctx, selector)
+				if err != nil {
+					return nil, output, fmt.Errorf("failed to resolve workflow %q: %w", selector, err)
+				}
+				workflowID = &resolvedID
+			}
+		}
+	}
+
 	scope := struct {
 		Owner, Repo, Branch, Status, Conclusion, CreatedAfter, Event, Actor, Format string
 		WorkflowID                                                                  *int64
 		PerPage                                                                     int
-	}{owner, repo, input.Branch, input.Status, input.Conclusion, input.CreatedAfter, input.Event, input.Actor, input.Format, input.WorkflowID, perPage}
+	}{owner, repo, input.Branch, input.Status, input.Conclusion, input.CreatedAfter, input.Event, input.Actor, input.Format, workflowID, perPage}
 	position, err := decodeCursor(input.Cursor, scope, s.cursorKey())
 	if err != nil {
 		return nil, output, err
 	}
 	opts := &github.ListRunsOptions{
-		WorkflowID: input.WorkflowID, Branch: input.Branch, Status: input.Status,
+		WorkflowID: workflowID, Branch: input.Branch, Status: input.Status,
 		Conclusion: input.Conclusion, Per_page: perPage, CreatedAfter: input.CreatedAfter,
 		Event: input.Event, Actor: input.Actor, Page: position.Page,
 	}
@@ -106,6 +130,38 @@ func (s *MCPServer) listRunsTyped(ctx context.Context, _ *sdkmcp.CallToolRequest
 	}
 	output = listRunsOutput{Runs: formatRuns(runs, input.Format), NextCursor: nextCursor}
 	return nil, output, nil
+}
+
+func normalizeWorkflowIDSelector(raw any) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v), nil
+	case json.Number:
+		str := strings.TrimSpace(string(v))
+		if str == "" {
+			return "", nil
+		}
+		if _, err := strconv.ParseInt(str, 10, 64); err != nil {
+			return "", fmt.Errorf("workflow_id %q is not a valid integer", str)
+		}
+		return str, nil
+	case float64:
+		if v != float64(int64(v)) {
+			return "", fmt.Errorf("workflow_id %v is not an integer", v)
+		}
+		return strconv.FormatInt(int64(v), 10), nil
+	case int:
+		return strconv.FormatInt(int64(v), 10), nil
+	case int64:
+		return strconv.FormatInt(v, 10), nil
+	case uint64:
+		return strconv.FormatUint(v, 10), nil
+	default:
+		return "", fmt.Errorf("workflow_id must be an integer or a workflow name/path")
+	}
 }
 
 func (s *MCPServer) cursorKey() []byte {
