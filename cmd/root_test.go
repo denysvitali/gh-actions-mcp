@@ -2,11 +2,8 @@ package cmd
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -210,68 +207,4 @@ func TestIsLoopbackAddress(t *testing.T) {
 	assert.True(t, isLoopbackAddress("[::1]:8080"))
 	assert.True(t, isLoopbackAddress("localhost:8080"))
 	assert.False(t, isLoopbackAddress("0.0.0.0:8080"))
-}
-
-func writeTestConfig(t *testing.T, body string) string {
-	t.Helper()
-
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	err := os.WriteFile(path, []byte(body), 0644)
-	require.NoError(t, err)
-	return path
-}
-
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-
-	oldStdout := os.Stdout
-	reader, writer, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stdout = writer
-
-	fn()
-
-	require.NoError(t, writer.Close())
-	os.Stdout = oldStdout
-	defer func() {
-		_ = reader.Close()
-	}()
-
-	data, err := io.ReadAll(reader)
-	require.NoError(t, err)
-	return strings.TrimSpace(string(data))
-}
-
-func preserveCommandGlobals() func() {
-	oldCfgFile := cfgFile
-	oldRepoOwner := repoOwner
-	oldRepoName := repoName
-	oldToken := token
-	oldLogLevel := logLevel
-	oldToolArgsJSON := toolArgsJSON
-	oldMCPTransport := mcpTransport
-	oldMCPHTTPAddress := mcpHTTPAddress
-	oldMCPHTTPPath := mcpHTTPPath
-	oldMCPHTTPToken := mcpHTTPToken
-	oldMCPHTTPTLSCert := mcpHTTPTLSCert
-	oldMCPHTTPTLSKey := mcpHTTPTLSKey
-	oldMCPHTTPOrigins := append([]string(nil), mcpHTTPOrigins...)
-	oldMCPHTTPMaxBody := mcpHTTPMaxBody
-
-	return func() {
-		cfgFile = oldCfgFile
-		repoOwner = oldRepoOwner
-		repoName = oldRepoName
-		token = oldToken
-		logLevel = oldLogLevel
-		toolArgsJSON = oldToolArgsJSON
-		mcpTransport = oldMCPTransport
-		mcpHTTPAddress = oldMCPHTTPAddress
-		mcpHTTPPath = oldMCPHTTPPath
-		mcpHTTPToken = oldMCPHTTPToken
-		mcpHTTPTLSCert = oldMCPHTTPTLSCert
-		mcpHTTPTLSKey = oldMCPHTTPTLSKey
-		mcpHTTPOrigins = oldMCPHTTPOrigins
-		mcpHTTPMaxBody = oldMCPHTTPMaxBody
-	}
 }

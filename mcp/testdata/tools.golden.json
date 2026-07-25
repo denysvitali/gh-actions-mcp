@@ -1,0 +1,1203 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Analyze workflow, job, or step durations across recent runs to compare a specific CI run against recent history and surface slow spots.",
+    "inputSchema": {
+      "properties": {
+        "branch": {
+          "description": "Optional: branch to compare against. When omitted, compares against runs from all branches.",
+          "type": "string"
+        },
+        "conclusion": {
+          "description": "Optional: only include runs with a specific conclusion (success, failure, cancelled, etc.).",
+          "type": "string"
+        },
+        "job_name": {
+          "description": "Optional: analyze a specific job across runs. Required when step_name is provided.",
+          "type": "string"
+        },
+        "limit": {
+          "default": 10,
+          "description": "Maximum number of recent runs to analyze (default: 10, max: 50).",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Optional: focus on a specific workflow run ID. When omitted, the latest matching run is used.",
+          "type": "integer"
+        },
+        "step_name": {
+          "description": "Optional: analyze a specific step within job_name across runs.",
+          "type": "string"
+        },
+        "workflow": {
+          "description": "Workflow selector (name, path, or numeric ID). Required unless run_id is provided.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "analyze_timing",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "focus": {
+          "additionalProperties": false,
+          "properties": {
+            "conclusion": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "delta_from_average_percent": {
+              "type": "number"
+            },
+            "delta_from_average_seconds": {
+              "type": "number"
+            },
+            "delta_from_previous_percent": {
+              "type": "number"
+            },
+            "delta_from_previous_seconds": {
+              "type": "number"
+            },
+            "duration_seconds": {
+              "type": "number"
+            },
+            "run_id": {
+              "type": "integer"
+            },
+            "run_number": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "run_id",
+            "run_number",
+            "duration_seconds",
+            "delta_from_average_seconds",
+            "delta_from_average_percent"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "job_breakdown": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "average_duration_seconds": {
+                "type": "number"
+              },
+              "delta_from_average_percent": {
+                "type": "number"
+              },
+              "delta_from_average_seconds": {
+                "type": "number"
+              },
+              "duration_seconds": {
+                "type": "number"
+              },
+              "job_name": {
+                "type": "string"
+              },
+              "step_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "duration_seconds",
+              "average_duration_seconds",
+              "delta_from_average_seconds",
+              "delta_from_average_percent"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "job_name": {
+          "type": "string"
+        },
+        "recent_samples": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "conclusion": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "duration_seconds": {
+                "type": "number"
+              },
+              "run_id": {
+                "type": "integer"
+              },
+              "run_number": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "run_id",
+              "run_number",
+              "duration_seconds"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "sample_count": {
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "statistics": {
+          "additionalProperties": false,
+          "properties": {
+            "average_seconds": {
+              "type": "number"
+            },
+            "count": {
+              "type": "integer"
+            },
+            "max_seconds": {
+              "type": "number"
+            },
+            "median_seconds": {
+              "type": "number"
+            },
+            "min_seconds": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "count",
+            "average_seconds",
+            "median_seconds",
+            "min_seconds",
+            "max_seconds"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "step_breakdown": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "average_duration_seconds": {
+                "type": "number"
+              },
+              "delta_from_average_percent": {
+                "type": "number"
+              },
+              "delta_from_average_seconds": {
+                "type": "number"
+              },
+              "duration_seconds": {
+                "type": "number"
+              },
+              "job_name": {
+                "type": "string"
+              },
+              "step_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "duration_seconds",
+              "average_duration_seconds",
+              "delta_from_average_seconds",
+              "delta_from_average_percent"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "step_name": {
+          "type": "string"
+        },
+        "workflow_id": {
+          "type": "integer"
+        },
+        "workflow_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "workflow_id",
+        "workflow_name",
+        "sample_count",
+        "statistics",
+        "focus",
+        "recent_samples"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "One-shot diagnosis of a failed workflow run: identifies failed jobs/steps, extracts error lines from logs, and optionally checks for flakiness. Returns a structured diagnosis with actionable error context.",
+    "inputSchema": {
+      "properties": {
+        "check_flakiness": {
+          "description": "Compare against recent runs to detect flaky tests (default: true). Adds a few extra API calls.",
+          "type": "boolean"
+        },
+        "max_error_lines": {
+          "default": 50,
+          "description": "Maximum number of error lines to extract per job (default: 50)",
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The workflow run ID to diagnose. If omitted, diagnoses the latest failed run on the current branch.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "diagnose_failure",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "conclusion": {
+          "type": "string"
+        },
+        "failed_jobs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "conclusion": {
+                "type": "string"
+              },
+              "error_lines": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "error_source": {
+                "type": "string"
+              },
+              "failed_steps": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "conclusion": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "number": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "number",
+                    "conclusion"
+                  ],
+                  "type": [
+                    "null",
+                    "object"
+                  ]
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "job_id": {
+                "type": "integer"
+              },
+              "job_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id",
+              "job_name",
+              "conclusion",
+              "failed_steps",
+              "error_lines"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "flakiness": {
+          "additionalProperties": false,
+          "properties": {
+            "recent_failures": {
+              "type": "integer"
+            },
+            "recent_runs_checked": {
+              "type": "integer"
+            },
+            "recent_successes": {
+              "type": "integer"
+            },
+            "same_failure_count": {
+              "type": "integer"
+            },
+            "verdict": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "recent_runs_checked",
+            "recent_failures",
+            "recent_successes",
+            "same_failure_count",
+            "verdict"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "run_name": {
+          "type": "string"
+        },
+        "run_url": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "run_name",
+        "run_url",
+        "branch",
+        "head_sha",
+        "conclusion",
+        "failed_jobs",
+        "summary"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "description": "Download a workflow run artifact to disk",
+    "inputSchema": {
+      "properties": {
+        "artifact_id": {
+          "description": "The artifact ID",
+          "type": "integer"
+        },
+        "output_path": {
+          "description": "Optional path relative to artifact_root (default: {artifact-name}.zip)",
+          "type": "string"
+        },
+        "overwrite": {
+          "description": "Replace an existing destination atomically (default: false)",
+          "type": "boolean"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "type": "object"
+    },
+    "name": "download_artifact",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "file_count": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "saved_path": {
+          "type": "string"
+        },
+        "total_size": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "id",
+        "saved_path",
+        "file_count",
+        "total_size"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Get the contents of a workflow run artifact (stream without downloading to disk)",
+    "inputSchema": {
+      "properties": {
+        "artifact_id": {
+          "description": "The artifact ID",
+          "type": "integer"
+        },
+        "file_pattern": {
+          "description": "Optional: glob pattern to filter files within the artifact (e.g., '*.txt', 'logs/*.log')",
+          "type": "string"
+        },
+        "max_file_size": {
+          "default": 1048576,
+          "description": "Optional: maximum size of individual files to read in bytes (default: 1MB). Files larger than this will show size info only.",
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_artifact",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "file_count": {
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "encoding": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "size": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "size"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "id": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size_in_bytes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "id",
+        "size_in_bytes",
+        "files",
+        "file_count"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Get workflow status summary for a commit/branch/tag (derived from workflow runs; no Checks API permission required).",
+    "inputSchema": {
+      "properties": {
+        "check_name": {
+          "description": "Optional: filter by specific check name",
+          "type": "string"
+        },
+        "filter": {
+          "default": "latest",
+          "description": "Return latest workflow statuses (default) or all statuses for the ref. Allowed: latest, all.",
+          "enum": [
+            "latest",
+            "all"
+          ],
+          "type": "string"
+        },
+        "format": {
+          "default": "summary",
+          "description": "Output format: summary (default), compact, or full",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Git ref (commit SHA, branch name, or tag) - default: HEAD of current branch",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "status": {
+          "description": "Optional: filter by status (queued, in_progress, completed)",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "get_check_status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Get workflow run details. Start with element=info, then use jobs/logs/log_sections/artifacts as needed.",
+    "inputSchema": {
+      "properties": {
+        "artifact_id": {
+          "description": "For element=artifact_content: the artifact ID to get contents for",
+          "type": "integer"
+        },
+        "attempt_number": {
+          "description": "For element=jobs: attempt number for the jobs (default: latest)",
+          "type": "integer"
+        },
+        "context": {
+          "default": 0,
+          "description": "For element=logs: number of lines to show before and after each search match (default: 0)",
+          "type": "integer"
+        },
+        "element": {
+          "default": "info",
+          "description": "Element to retrieve: info (default), jobs, logs, log_files, log_sections, artifacts, artifact_content. Invalid values return a validation error with allowed options.",
+          "enum": [
+            "info",
+            "jobs",
+            "logs",
+            "log_files",
+            "log_sections",
+            "artifacts",
+            "artifact_content"
+          ],
+          "type": "string"
+        },
+        "file_pattern": {
+          "description": "For element=logs or artifact_content: glob pattern to filter files (e.g., '*.log', 'build/*')",
+          "type": "string"
+        },
+        "format": {
+          "default": "compact",
+          "description": "For element=info, jobs, artifacts, log_files: output format (compact/full, default: compact)",
+          "type": "string"
+        },
+        "head": {
+          "description": "For element=logs: return the first N lines of logs. Without head or tail, logs are auto-truncated to the last ~100 lines",
+          "type": "integer"
+        },
+        "job_id": {
+          "description": "For element=logs or element=log_sections: specific job ID to get logs/sections for",
+          "type": "integer"
+        },
+        "max_file_size": {
+          "default": 1048576,
+          "description": "For element=artifact_content: maximum size of individual files to read in bytes (default: 1MB)",
+          "type": "integer"
+        },
+        "no_headers": {
+          "description": "For element=logs: don't print file headers (=== filename ===)",
+          "type": "boolean"
+        },
+        "offset": {
+          "description": "For element=logs: skip first N lines before returning (0-based)",
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "per_job": {
+          "description": "For element=logs: get logs per-job instead of all logs combined",
+          "type": "boolean"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The workflow run ID",
+          "type": "integer"
+        },
+        "search": {
+          "description": "For element=logs: search/filter logs to lines containing this substring (case-insensitive)",
+          "type": "string"
+        },
+        "search_regex": {
+          "description": "For element=logs: filter logs to lines matching this regex pattern",
+          "type": "string"
+        },
+        "section": {
+          "description": "For element=logs: extract a specific section by name/pattern (e.g., 'Build', 'Test'). GitHub Actions sections are marked with ##[group]Section Name",
+          "type": "string"
+        },
+        "tail": {
+          "description": "For element=logs: return the last N lines of logs (default: auto-truncated to last ~100 lines if neither head nor tail is specified)",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "List workflow runs with comprehensive filtering options",
+    "inputSchema": {
+      "properties": {
+        "actor": {
+          "description": "Optional: GitHub username to filter by",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Optional: Branch to filter by. When omitted, runs from all branches are included.",
+          "type": "string"
+        },
+        "conclusion": {
+          "description": "Optional: Conclusion to filter by (success, failure, neutral, cancelled, etc.)",
+          "type": "string"
+        },
+        "created_after": {
+          "description": "Optional: ISO 8601 date string to filter runs created after this time",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque cursor returned by the previous call",
+          "type": "string"
+        },
+        "event": {
+          "description": "Optional: Event to filter by (push, pull_request, etc.)",
+          "type": "string"
+        },
+        "format": {
+          "default": "compact",
+          "description": "Output format: minimal (basic fields), compact (default, most fields), or full (all fields)",
+          "type": "string"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "per_page": {
+          "default": 5,
+          "description": "Number of results per page (default: 5)",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "status": {
+          "description": "Optional: Status to filter by (queued, in_progress, completed, etc.)",
+          "type": "string"
+        },
+        "workflow_id": {
+          "description": "Optional: workflow ID, workflow name, or workflow file path (e.g., '12345678', 'CI', or '.github/workflows/ci.yml') to filter by"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_runs",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "next_cursor": {
+          "type": "string"
+        },
+        "runs": {
+          "items": true,
+          "type": [
+            "null",
+            "array"
+          ]
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "List all workflows available in the repository",
+    "inputSchema": {
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor returned by the previous call",
+          "type": "string"
+        },
+        "format": {
+          "default": "compact",
+          "description": "Output format: compact (default, single-line JSON), pretty (indented JSON), or full (detailed)",
+          "type": "string"
+        },
+        "limit": {
+          "default": 5,
+          "description": "Maximum number of workflows to return (default: 5)",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "list_workflows",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "next_cursor": {
+          "type": "string"
+        },
+        "workflows": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "path",
+              "state"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        }
+      },
+      "required": [
+        "workflows"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true
+    },
+    "description": "Manage a workflow run (cancel, rerun, or rerun failed jobs)",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "description": "Action to perform: cancel, rerun, or rerun_failed",
+          "enum": [
+            "cancel",
+            "rerun",
+            "rerun_failed"
+          ],
+          "type": "string"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The workflow run ID to manage",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "manage_run",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "action",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Wait silently for every job in a workflow run to complete, regardless of job status",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The workflow run ID to wait for",
+          "type": "integer"
+        },
+        "timeout_minutes": {
+          "default": 30,
+          "description": "Maximum time to wait in minutes (default: 30)",
+          "maximum": 120,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "wait_all",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "type": "string"
+        },
+        "conclusion": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "poll_count": {
+          "type": "integer"
+        },
+        "run_url": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "timeout_reached": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "status",
+        "duration",
+        "run_url",
+        "timeout_reached",
+        "poll_count"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Wait for all CI check runs for a commit ref (SHA, branch, or tag) to complete.",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Git ref (commit SHA, branch name, or tag) - default: HEAD",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "timeout_minutes": {
+          "default": 30,
+          "description": "Maximum time to wait in minutes (default: 30)",
+          "maximum": 120,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "wait_for_commit_checks",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "checks_by_conclusion": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "checks_total": {
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "type": "number"
+        },
+        "overall_conclusion": {
+          "type": "string"
+        },
+        "timeout_reached": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "overall_conclusion",
+        "checks_total",
+        "checks_by_conclusion",
+        "duration_seconds",
+        "timeout_reached"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Wait silently for a workflow run to complete (no output during polling)",
+    "inputSchema": {
+      "properties": {
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "The workflow run ID to wait for",
+          "type": "integer"
+        },
+        "timeout_minutes": {
+          "default": 30,
+          "description": "Maximum time to wait in minutes (default: 30)",
+          "maximum": 120,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "name": "wait_for_run",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_at": {
+          "type": "string"
+        },
+        "conclusion": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "number"
+        },
+        "poll_count": {
+          "type": "integer"
+        },
+        "run_url": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "timeout_reached": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "status",
+        "duration",
+        "run_url",
+        "timeout_reached",
+        "poll_count"
+      ],
+      "type": "object"
+    }
+  }
+]
