@@ -6,6 +6,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/google/go-github/v69 v69.2.0
 	github.com/google/go-github/v89 v89.0.0
+	github.com/google/go-github/v90 v90.0.0
 	github.com/keybase/go-keychain v0.0.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/sirupsen/logrus v1.9.4
