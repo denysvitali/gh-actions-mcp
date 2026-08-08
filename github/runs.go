@@ -156,7 +156,7 @@ func (c *Client) ListRepositoryWorkflowRunsWithOptions(ctx context.Context, opts
 
 // ListRepositoryWorkflowRunsPage returns one page of workflow runs and the
 // next GitHub page, or zero when there are no more pages.
-func (c *Client) ListRepositoryWorkflowRunsPage(ctx context.Context, opts *ListRunsOptions) ([]*WorkflowRun, int, error) {
+func (c *Client) ListRepositoryWorkflowRunsPage(ctx context.Context, opts *ListRunsOptions) ([]*WorkflowRun, int, error) { //nolint:gocognit // Filter translation and one API page are one operation.
 	if opts == nil {
 		opts = &ListRunsOptions{}
 	}
@@ -189,9 +189,9 @@ func (c *Client) ListRepositoryWorkflowRunsPage(ctx context.Context, opts *ListR
 	if opts.Per_page > 0 {
 		per_page = opts.Per_page
 	}
-	githubOpts.ListOptions.PerPage = per_page
+	githubOpts.PerPage = per_page
 	if opts.Page > 0 {
-		githubOpts.ListOptions.Page = opts.Page
+		githubOpts.Page = opts.Page
 	}
 
 	var runs *github.WorkflowRuns

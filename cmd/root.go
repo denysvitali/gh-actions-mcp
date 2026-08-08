@@ -1,59 +1,18 @@
 package cmd
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
 	appmcp "github.com/denysvitali/gh-actions-mcp/mcp"
 
-	mcptypes "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
-
-var (
-	version        = "dev"
-	cfgFile        string
-	repoOwner      string
-	repoName       string
-	token          string
-	logLevel       string
-	mcpTransport   string
-	mcpHTTPAddress string
-	mcpHTTPPath    string
-	mcpHTTPToken   string
-	mcpHTTPTLSCert string
-	mcpHTTPTLSKey  string
-	mcpHTTPOrigins []string
-	mcpHTTPMaxBody int64
-	// noGitProxyDetect disables deriving api_base_url from git insteadOf rules.
-	noGitProxyDetect bool
-)
-
-// Logs command flags
-var (
-	logsSearch    string
-	logsRegex     string
-	logsSection   string
-	logsContext   int
-	logsTail      int
-	logsHead      int
-	logsOffset    int
-	logsNoHeaders bool
-	logsJobID     int64
-	logsOwner     string
-	logsRepo      string
-)
-
-var toolArgsJSON string
 
 var log = logrus.New()
 
@@ -63,20 +22,9 @@ func init() {
 		FullTimestamp:    true,
 	})
 
-	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file path")
-	rootCmd.PersistentFlags().StringVarP(&repoOwner, "repo-owner", "o", "", "repository owner")
-	rootCmd.PersistentFlags().StringVarP(&repoName, "repo-name", "r", "", "repository name")
-	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "GitHub token (or use GITHUB_TOKEN env var, or macOS keychain)")
-	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "l", "info", "log level (debug, info, warn, error)")
-	rootCmd.PersistentFlags().StringVar(&mcpTransport, "transport", "stdio", "MCP transport: stdio or http")
-	rootCmd.PersistentFlags().StringVar(&mcpHTTPAddress, "http-address", "127.0.0.1:8080", "Streamable HTTP listen address")
-	rootCmd.PersistentFlags().StringVar(&mcpHTTPPath, "http-path", "/mcp", "Streamable HTTP endpoint path")
-	rootCmd.PersistentFlags().StringVar(&mcpHTTPToken, "http-token", "", "Bearer token required by the Streamable HTTP endpoint (or GH_ACTIONS_MCP_HTTP_TOKEN)")
-	rootCmd.PersistentFlags().StringVar(&mcpHTTPTLSCert, "http-tls-cert", "", "TLS certificate for Streamable HTTP")
-	rootCmd.PersistentFlags().StringVar(&mcpHTTPTLSKey, "http-tls-key", "", "TLS private key for Streamable HTTP")
-	rootCmd.PersistentFlags().StringSliceVar(&mcpHTTPOrigins, "http-allowed-origin", nil, "trusted browser origin (repeatable)")
-	rootCmd.PersistentFlags().Int64Var(&mcpHTTPMaxBody, "http-max-body", 1<<20, "maximum Streamable HTTP request body in bytes")
-	rootCmd.PersistentFlags().BoolVar(&noGitProxyDetect, "no-git-proxy-detect", false, "do not derive the API base URL from git url.<proxy>.insteadOf rules")
+	registerRootFlags(rootCmd)
+	registerLogsFlags(logsCmd)
+	registerToolFlags(toolCmd)
 
 	// Infer repo from git origin
 	rootCmd.AddCommand(inferCmd)
@@ -136,10 +84,14 @@ var inferCmd = &cobra.Command{
 	Long:  "Get the repository owner and name from the git remote origin URL",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Get git remote URL
-		cmdExec := exec.Command("git", "remote", "get-url", "origin")
+		// noctx: cmd.Context() is nil until cobra's Execute sets it, so
+		// exec.CommandContext would panic when RunE is called directly.
+		// Wiring a context here would also start killing the git process on
+		// cancellation, which is a behaviour change, not a refactor.
+		cmdExec := exec.Command("git", "remote", "get-url", "origin") //nolint:noctx
 		output, err := cmdExec.Output()
 		if err != nil {
-			return fmt.Errorf("failed to get git remote: %v (are you in a git repo with an 'origin' remote?)", err)
+			return fmt.Errorf("failed to get git remote: %w (are you in a git repo with an 'origin' remote?)", err)
 		}
 
 		remoteURL := strings.TrimRight(string(output), "\n\r")
@@ -159,398 +111,6 @@ var inferCmd = &cobra.Command{
 
 		return nil
 	},
-}
-
-func loadConfig() (*config.Config, error) {
-	return loadConfigWithOptions(true)
-}
-
-func loadConfigAllowMissingRepo() (*config.Config, error) {
-	return loadConfigWithOptions(false)
-}
-
-func loadConfigWithOptions(requireRepo bool) (*config.Config, error) {
-	config.SetLogger(log)
-
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		return nil, err
-	}
-
-	// Override with CLI flags
-	if repoOwner != "" {
-		cfg.RepoOwner = repoOwner
-	}
-	if repoName != "" {
-		cfg.RepoName = repoName
-	}
-	if token != "" {
-		cfg.Token = token
-	}
-	if logLevel != "" {
-		cfg.LogLevel = logLevel
-	}
-	cfg.ServerVersion = version
-
-	// Try to infer repo from git if not set
-	if cfg.RepoOwner == "" || cfg.RepoName == "" {
-		if inferErr := inferRepoFromGit(cfg); inferErr != nil {
-			log.Warnf("Could not infer repo from git: %v", inferErr)
-		}
-	}
-
-	// Credentials embedded in the proxy rewrite can be the token. Run before
-	// and after detection: detection may set the API base URL (enabling the
-	// split), and the split may add a username that detection must respect.
-	cfg.SplitProxyCredentials()
-
-	// Route API calls through the same proxy git uses, if any. Must run
-	// before ValidateToken: the proxy credentials can be the only token.
-	if noGitProxyDetect {
-		cfg.GitProxyDetect = false
-	}
-	applyGitProxyDetection(cfg)
-	cfg.SplitProxyCredentials()
-
-	if err := cfg.ValidateToken(); err != nil {
-		return nil, err
-	}
-	if requireRepo {
-		if cfg.RepoOwner == "" {
-			return nil, fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
-		}
-		if cfg.RepoName == "" {
-			return nil, fmt.Errorf("repository name is required. Set GH_REPO_NAME env var, 'repo_name' in config, or use --repo-name flag")
-		}
-	}
-
-	if cfg.RepoOwner != "" && cfg.RepoName != "" {
-		log.Infof("Configured for repository: %s/%s", cfg.RepoOwner, cfg.RepoName)
-	} else {
-		log.Infof("Configured without a default repository")
-	}
-	return cfg, nil
-}
-
-func configureLogLevel() error {
-	level, err := logrus.ParseLevel(logLevel)
-	if err != nil {
-		return fmt.Errorf("invalid log level: %w", err)
-	}
-	log.SetLevel(level)
-	return nil
-}
-
-// applyGitProxyDetection derives the API base URL (and HTTP Basic credentials)
-// from git's url.<proxy>.insteadOf rewrites, so that a machine whose git only
-// reaches github.com through a proxy such as gh-proxy also reaches the REST
-// API through it. Explicit configuration always wins; credentials are never
-// logged.
-func applyGitProxyDetection(cfg *config.Config) {
-	if !cfg.GitProxyDetect {
-		log.Debugf("Git proxy detection disabled")
-		return
-	}
-	if cfg.APIBaseURL != "" {
-		log.Debugf("api_base_url already set, skipping git proxy detection")
-		return
-	}
-
-	proxy, err := github.DetectProxy("")
-	if err != nil {
-		log.Debugf("Could not read git config for proxy detection: %v", err)
-		return
-	}
-	if proxy == nil {
-		return
-	}
-
-	cfg.APIBaseURL = proxy.APIBaseURL
-	switch {
-	case cfg.AuthUsername != "":
-		// The user configured Basic auth themselves; keep their credentials.
-	case proxy.HasCredentials():
-		// A GitHub PAT is useless against a proxy that authenticates its own
-		// consumers, so the credentials from git config take precedence.
-		cfg.AuthUsername = proxy.Username
-		cfg.Token = proxy.Password
-	}
-	log.Infof("Using GitHub proxy from git config: %s", proxy)
-}
-
-func inferRepoFromGit(cfg *config.Config) error {
-	detector := github.NewRepoDetector()
-	info, err := detector.Detect()
-	if err != nil {
-		return err
-	}
-
-	if cfg.RepoOwner == "" {
-		cfg.RepoOwner = info.Owner
-	}
-	if cfg.RepoName == "" {
-		cfg.RepoName = info.Repo
-	}
-
-	log.Infof("Inferred repository from %s: %s/%s", info.Source, info.Owner, info.Repo)
-	return nil
-}
-
-var logsCmd = &cobra.Command{
-	Use:   "logs [URL|run-id|job-id]",
-	Short: "Fetch logs for a workflow run or job",
-	Long: `Fetch and filter logs from GitHub Actions workflow runs or jobs.
-
-CONCEPTS:
-  Workflow    - A YAML file defining a CI/CD process (e.g., build.yml)
-  Run         - A specific execution of a workflow (has a run ID)
-  Job         - A step within a workflow run (has a job ID)
-  Section     - A grouped portion of logs (marked by ##[group]...##[endgroup])
-
-Supports GitHub Actions URLs:
-  - Run URL: https://github.com/owner/repo/actions/runs/123456
-  - Job URL: https://github.com/owner/repo/actions/runs/123456/job/789012
-
-Examples:
-  # Get all logs for a run
-  gh-actions-mcp logs 21662021288
-
-  # Get logs from a URL
-  gh-actions-mcp logs https://github.com/denysvitali/gh-actions-mcp/actions/runs/21662021288/job/62449039965
-
-  # Filter for specific text
-  gh-actions-mcp logs 21662021288 --search "OTA task started"
-
-  # Get specific section
-  gh-actions-mcp logs 21662021288 --section "Flash and soak test"
-
-  # Use regex filter
-  gh-actions-mcp logs 21662021288 --regex "OTA.*started"
-
-TIPS:
-  - If you get a 404 error, the run ID might not exist. List runs using the MCP tool:
-    list_workflow_runs or list_repository_workflow_runs
-  - When using a URL, owner/repo are extracted from the URL automatically
-  - Use --job-id to get logs for a specific job within a run
-`,
-	Args: cobra.ExactArgs(1),
-	RunE: runLogs,
-}
-
-func init() {
-	logsCmd.Flags().StringVarP(&logsSearch, "search", "s", "", "Filter lines containing substring")
-	logsCmd.Flags().StringVar(&logsRegex, "regex", "", "Filter lines matching regex pattern")
-	logsCmd.Flags().StringVar(&logsSection, "section", "", "Extract a specific section by name/pattern")
-	logsCmd.Flags().IntVarP(&logsContext, "context", "C", 0, "Show N lines of context around matches")
-	logsCmd.Flags().IntVar(&logsTail, "tail", 0, "Show last N lines")
-	logsCmd.Flags().IntVar(&logsHead, "head", 0, "Show first N lines")
-	logsCmd.Flags().IntVar(&logsOffset, "offset", 0, "Skip first N lines")
-	logsCmd.Flags().BoolVar(&logsNoHeaders, "no-headers", false, "Don't print file headers")
-	logsCmd.Flags().Int64VarP(&logsJobID, "job-id", "j", 0, "Specific job ID (when using run ID)")
-	logsCmd.Flags().StringVar(&logsOwner, "owner", "", "Override repo owner")
-	logsCmd.Flags().StringVar(&logsRepo, "repo", "", "Override repo name")
-
-	toolCmd.Flags().StringVar(&toolArgsJSON, "args", "{}", "Tool arguments as a JSON object")
-}
-
-var toolCmd = &cobra.Command{
-	Use:   "tool <tool-name>",
-	Short: "Invoke an MCP tool locally",
-	Long: `Invoke a registered MCP tool locally using a JSON argument object.
-
-Examples:
-  gh-actions-mcp tool list_runs --args '{"owner":"example","repo":"demo","per_page":10}'
-  gh-actions-mcp tool analyze_timing --args '{"owner":"example","repo":"demo","workflow":"CI","limit":10}'`,
-	Args: cobra.ExactArgs(1),
-	RunE: runTool,
-}
-
-func runTool(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if err := configureLogLevel(); err != nil {
-		return err
-	}
-
-	cfg, err := loadConfigAllowMissingRepo()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	toolArgs := map[string]interface{}{}
-	if strings.TrimSpace(toolArgsJSON) != "" {
-		if err := json.Unmarshal([]byte(toolArgsJSON), &toolArgs); err != nil {
-			return fmt.Errorf("failed to parse --args as JSON object: %w", err)
-		}
-		if toolArgs == nil {
-			toolArgs = map[string]interface{}{}
-		}
-	}
-
-	mcpServer, err := appmcp.NewMCPServer(cfg, log)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = mcpServer.Close() }()
-	result, err := mcpServer.InvokeTool(ctx, args[0], toolArgs)
-	if err != nil {
-		return err
-	}
-
-	if result.IsError {
-		return errors.New(renderToolResult(result))
-	}
-
-	output := renderToolResult(result)
-	if output == "" {
-		return nil
-	}
-	fmt.Println(output)
-	return nil
-}
-
-func renderToolResult(result *mcptypes.CallToolResult) string {
-	if result == nil {
-		return ""
-	}
-	if result.StructuredContent != nil {
-		data, err := json.Marshal(result.StructuredContent)
-		if err == nil {
-			return string(data)
-		}
-	}
-
-	parts := make([]string, 0, len(result.Content))
-	for _, content := range result.Content {
-		if text, ok := content.(*mcptypes.TextContent); ok {
-			parts = append(parts, text.Text)
-			continue
-		}
-
-		data, err := json.Marshal(content)
-		if err != nil {
-			parts = append(parts, fmt.Sprintf("%v", content))
-			continue
-		}
-		parts = append(parts, string(data))
-	}
-
-	return strings.Join(parts, "\n")
-}
-
-func runLogs(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	// Load config
-	cfg, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Override with CLI flags
-	if logsOwner != "" {
-		cfg.RepoOwner = logsOwner
-	}
-	if logsRepo != "" {
-		cfg.RepoName = logsRepo
-	}
-
-	// Parse the argument (URL or ID)
-	arg := args[0]
-
-	var owner, repo string
-	var runID, jobID int64
-
-	// Check if it's a URL
-	if github.IsActionsURL(arg) {
-		parsed, err := github.ParseActionsURL(arg)
-		if err != nil {
-			return fmt.Errorf("failed to parse URL: %w", err)
-		}
-		owner = parsed.Owner
-		repo = parsed.Repo
-		runID = parsed.RunID
-		jobID = parsed.JobID
-	} else {
-		// Try to parse as run ID
-		id, err := github.ParseRunID(arg)
-		if err != nil {
-			return fmt.Errorf("invalid run ID: %w", err)
-		}
-		runID = id
-		jobID = logsJobID
-		owner = cfg.RepoOwner
-		repo = cfg.RepoName
-	}
-
-	// Validate we have owner and repo
-	if owner == "" || repo == "" {
-		return fmt.Errorf("repository owner and name must be specified via URL, config, or --owner/--repo flags")
-	}
-
-	// Create GitHub client
-	client, err := github.NewClientWithOptions(github.ClientOptions{
-		Token:        cfg.Token,
-		Owner:        owner,
-		Repo:         repo,
-		APIBaseURL:   cfg.APIBaseURL,
-		UploadURL:    cfg.UploadURL,
-		RetryMax:     cfg.RetryMax,
-		AuthUsername: cfg.AuthUsername,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create GitHub client: %w", err)
-	}
-
-	// Prepare filter options
-	filterOpts := &github.LogFilterOptions{}
-	if logsSearch != "" {
-		filterOpts.Filter = logsSearch
-	}
-	if logsRegex != "" {
-		filterOpts.FilterRegex = logsRegex
-	}
-	filterOpts.ContextLines = logsContext
-
-	// Fetch logs
-	var logs string
-
-	if logsSection != "" {
-		// Extract specific section
-		logs, err = client.GetLogSection(ctx, runID, jobID, logsSection, filterOpts)
-	} else if jobID > 0 {
-		// Get logs for specific job
-		logs, err = client.GetWorkflowJobLogs(ctx, jobID, logsHead, logsTail, logsOffset, logsNoHeaders, filterOpts)
-	} else {
-		// Get logs for run
-		logs, err = client.GetWorkflowLogs(ctx, runID, logsHead, logsTail, logsOffset, logsNoHeaders, filterOpts)
-	}
-
-	if err != nil {
-		// Provide helpful error messages for common HTTP errors
-		if github.IsHTTPError(err, 404) {
-			return fmt.Errorf("run or job not found (404). The run ID %d might not exist in %s/%s. Use the MCP tool list_repository_workflow_runs to find valid run IDs", runID, owner, repo)
-		}
-		if github.IsHTTPError(err, 401) {
-			return fmt.Errorf("authentication failed (401). Your token may not have access to %s/%s or the repository is private", owner, repo)
-		}
-		return fmt.Errorf("failed to get logs: %w", err)
-	}
-
-	// Output results
-	if logs == "" {
-		fmt.Println("(no matching logs)")
-	} else {
-		fmt.Print(logs)
-	}
-
-	return nil
 }
 
 func Execute() {
@@ -577,7 +137,9 @@ func getVersion() string {
 	if dir, err := os.Getwd(); err == nil {
 		gitDir := filepath.Join(dir, ".git")
 		if _, statErr := os.Stat(gitDir); statErr == nil {
-			gitCmd := exec.Command("git", "describe", "--tags", "--always")
+			// noctx: getVersion runs from Execute, before any command context
+			// exists, and must not be cancellable.
+			gitCmd := exec.Command("git", "describe", "--tags", "--always") //nolint:noctx
 			if output, err := gitCmd.Output(); err == nil {
 				return strings.TrimSpace(string(output))
 			}

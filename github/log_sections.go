@@ -15,9 +15,9 @@ func (c *Client) GetLogSection(ctx context.Context, runID, jobID int64, sectionP
 
 	// Fetch logs based on whether we have a job ID
 	if jobID > 0 {
-		logs, err = c.GetWorkflowJobLogs(ctx, jobID, 0, 0, 0, false, nil)
+		logs, err = c.jobLogs(ctx, jobID, LogViewOptions{})
 	} else {
-		logs, err = c.GetWorkflowLogs(ctx, runID, 0, 0, 0, false, nil)
+		logs, err = c.workflowLogs(ctx, runID, "", LogViewOptions{})
 	}
 
 	if err != nil {
@@ -48,7 +48,7 @@ func (c *Client) GetLogSection(ctx context.Context, runID, jobID int64, sectionP
 
 // extractSection parses logs and extracts content between section markers
 // GitHub Actions logs use ##[group]Section Name and ##[endgroup] markers
-func extractSection(logs string, sectionPattern string) (string, error) {
+func extractSection(logs string, sectionPattern string) (string, error) { //nolint:gocognit,nestif // Nested groups require a single state-machine pass.
 	if sectionPattern == "" {
 		return logs, nil
 	}
@@ -71,7 +71,7 @@ func extractSection(logs string, sectionPattern string) (string, error) {
 		isGroupStart := strings.Contains(line, "##[group]") || strings.Contains(line, "::group::")
 		isGroupEnd := strings.Contains(line, "##[endgroup]") || strings.Contains(line, "::endgroup::")
 
-		if isGroupStart {
+		if isGroupStart { //nolint:nestif // Group depth and selected-section state must advance together.
 			sectionDepth++
 			// Check if this is the section we're looking for
 			if !inSection && re.MatchString(line) {
@@ -118,9 +118,9 @@ func (c *Client) ListLogSections(ctx context.Context, runID, jobID int64) ([]*Lo
 
 	// Fetch logs based on whether we have a job ID
 	if jobID > 0 {
-		logs, err = c.GetWorkflowJobLogs(ctx, jobID, 0, 0, 0, false, nil)
+		logs, err = c.jobLogs(ctx, jobID, LogViewOptions{})
 	} else {
-		logs, err = c.GetWorkflowLogs(ctx, runID, 0, 0, 0, false, nil)
+		logs, err = c.workflowLogs(ctx, runID, "", LogViewOptions{})
 	}
 
 	if err != nil {

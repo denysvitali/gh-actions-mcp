@@ -14,7 +14,7 @@ func writeTestConfig(t *testing.T, body string) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	err := os.WriteFile(path, []byte(body), 0644)
+	err := os.WriteFile(path, []byte(body), 0o644)
 	require.NoError(t, err)
 	return path
 }

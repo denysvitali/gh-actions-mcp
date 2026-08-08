@@ -4,7 +4,6 @@ go 1.26.5
 
 require (
 	github.com/go-git/go-git/v5 v5.19.1
-	github.com/google/go-github/v69 v69.2.0
 	github.com/google/go-github/v89 v89.0.0
 	github.com/keybase/go-keychain v0.0.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
@@ -12,6 +11,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
+	go.uber.org/goleak v1.3.0
 )
 
 require (

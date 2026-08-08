@@ -65,15 +65,7 @@ func serveStreamableHTTP(ctx context.Context, server *appmcp.MCPServer) error {
 	if err != nil {
 		return err
 	}
-	httpServer := &http.Server{
-		Addr:              mcpHTTPAddress,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      125 * time.Minute,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    64 << 10,
-	}
+	httpServer := newStreamableHTTPServer(handler)
 
 	if (mcpHTTPTLSCert == "") != (mcpHTTPTLSKey == "") {
 		return errors.New("both --http-tls-cert and --http-tls-key are required to enable TLS")
@@ -83,6 +75,20 @@ func serveStreamableHTTP(ctx context.Context, server *appmcp.MCPServer) error {
 		scheme = "https"
 	}
 	log.Infof("Serving MCP Streamable HTTP on %s://%s%s", scheme, mcpHTTPAddress, mcpHTTPPath)
+
+	// Concurrency contract for the goroutine below — the only `go` statement in
+	// this repository.
+	//
+	//	Owner:      serveStreamableHTTP (this function, this call).
+	//	Started by: this call, after every configuration check has passed.
+	//	Exit path:  it sends exactly one value on errCh and returns. errCh is
+	//	            buffered with capacity 1, so the send never blocks even when
+	//	            nobody is left to receive — the goroutine cannot leak.
+	//	Waited on:  serverExit below. On the ctx.Done() path it drains errCh
+	//	            after Shutdown returns, so serveStreamableHTTP never returns
+	//	            while the listener goroutine is still running.
+	//	Shares:     nothing mutable. It reads the mcpHTTPTLS* flags, which are
+	//	            written once by flag parsing before this function is called.
 	errCh := make(chan error, 1)
 	go func() {
 		if mcpHTTPTLSCert != "" {
@@ -92,6 +98,32 @@ func serveStreamableHTTP(ctx context.Context, server *appmcp.MCPServer) error {
 		errCh <- httpServer.ListenAndServe()
 	}()
 
+	return serverExit(ctx, httpServer, errCh)
+}
+
+// newStreamableHTTPServer builds the HTTP server with bounded timeouts.
+func newStreamableHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              mcpHTTPAddress,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// A single MCP request can legitimately hold the response open for as
+		// long as the longest-running tool: wait_for_run, wait_all and
+		// wait_for_commit_checks accept timeout_minutes with Maximum(120), so
+		// 120 minutes is the longest a handler can block. 125 leaves five
+		// minutes of margin for the final response write. Lower it and a
+		// legitimate two-hour wait would be cut off mid-stream.
+		WriteTimeout:   125 * time.Minute,
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 64 << 10,
+	}
+}
+
+// serverExit blocks until either the listener goroutine fails or ctx is
+// cancelled, in which case the server is drained with a bounded grace period.
+// It always waits for the listener goroutine before returning.
+func serverExit(ctx context.Context, httpServer *http.Server, errCh <-chan error) error {
 	select {
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -99,9 +131,13 @@ func serveStreamableHTTP(ctx context.Context, server *appmcp.MCPServer) error {
 		}
 		return err
 	case <-ctx.Done():
+		// contextcheck: deriving from ctx is wrong here — ctx is already
+		// cancelled, which is why we are on this branch, so a derived context
+		// would make Shutdown give up immediately and drop in-flight
+		// responses. A fresh context is the grace period.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		if err := httpServer.Shutdown(shutdownCtx); err != nil { //nolint:contextcheck
 			return fmt.Errorf("shut down HTTP server: %w", err)
 		}
 		err := <-errCh

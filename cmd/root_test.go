@@ -107,13 +107,13 @@ func TestStreamableHTTPHandler(t *testing.T) {
 	handler, err := streamableHTTPHandler(server)
 	require.NoError(t, err)
 
-	healthRequest := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	healthRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	healthResponse := httptest.NewRecorder()
 	handler.ServeHTTP(healthResponse, healthRequest)
 	assert.Equal(t, http.StatusOK, healthResponse.Code)
 	assert.Equal(t, "ok\n", healthResponse.Body.String())
 
-	initializeRequest := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	initializeRequest := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 	initializeRequest.Header.Set("Content-Type", "application/json")
 	initializeRequest.Header.Set("Accept", "application/json, text/event-stream")
 	initializeResponse := httptest.NewRecorder()
@@ -134,14 +134,14 @@ func TestStreamableHTTPBearerAuth(t *testing.T) {
 	handler, err := streamableHTTPHandler(server)
 	require.NoError(t, err)
 
-	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	assert.Equal(t, http.StatusUnauthorized, response.Code)
 
-	request = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	request = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Authorization", "Bearer secret")
@@ -185,14 +185,14 @@ func TestStreamableHTTPBodyLimitAndOrigins(t *testing.T) {
 	handler, err := streamableHTTPHandler(server)
 	require.NoError(t, err)
 
-	large := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(strings.Repeat("x", 128)))
+	large := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(strings.Repeat("x", 128)))
 	large.Header.Set("Content-Type", "application/json")
 	large.Header.Set("Accept", "application/json")
 	largeResponse := httptest.NewRecorder()
 	handler.ServeHTTP(largeResponse, large)
 	assert.NotEqual(t, http.StatusOK, largeResponse.Code)
 
-	crossOrigin := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
+	crossOrigin := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 	crossOrigin.Host = "local.example"
 	crossOrigin.Header.Set("Origin", "https://untrusted.example")
 	crossOrigin.Header.Set("Content-Type", "application/json")

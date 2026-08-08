@@ -1,22 +1,44 @@
 package mcp
 
 import (
-	appgithub "github.com/denysvitali/gh-actions-mcp/github"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // toolBuilder keeps the existing schema declarations readable while producing
-// schemas understood by the official SDK.
+// schemas understood by the official SDK. It carries no state: the methods are
+// namespaced onto it so that a declaration in tools_*.go reads
+// b.WithString("owner", b.Description("…")).
 type toolBuilder struct{}
 
+// toolDefinition accumulates one tool while its options are applied.
 type toolDefinition struct {
 	tool       *sdkmcp.Tool
 	properties map[string]any
 	required   []string
 }
 
-type toolOption func(any)
+// propertyDefinition accumulates one input-schema property while its options are
+// applied.
+type propertyDefinition struct {
+	property map[string]any
+	required bool
+}
 
+// toolOption configures a tool as a whole: its description, its annotations, or
+// the addition of one input property.
+type toolOption func(*toolDefinition)
+
+// propertyOption configures a single input-schema property.
+//
+// It is deliberately a distinct type from toolOption: the two sets are not
+// interchangeable, and separating them means passing a property option at tool
+// level (or a tool option to WithString) fails to compile instead of being
+// silently discarded at runtime.
+type propertyOption func(*propertyDefinition)
+
+// NewTool builds a tool with an object input schema. Property order does not
+// reach the wire — the schema is a map, so JSON encoding sorts the keys — but
+// the "required" list preserves declaration order.
 func (toolBuilder) NewTool(name string, options ...toolOption) *sdkmcp.Tool {
 	d := &toolDefinition{
 		tool:       &sdkmcp.Tool{Name: name},
@@ -25,238 +47,122 @@ func (toolBuilder) NewTool(name string, options ...toolOption) *sdkmcp.Tool {
 	for _, option := range options {
 		option(d)
 	}
-	d.tool.InputSchema = map[string]any{
+	schema := map[string]any{
 		"type":       "object",
 		"properties": d.properties,
 	}
 	if len(d.required) > 0 {
-		d.tool.InputSchema.(map[string]any)["required"] = d.required
+		schema["required"] = d.required
 	}
+	d.tool.InputSchema = schema
 	return d.tool
 }
 
 func (toolBuilder) WithDescription(description string) toolOption {
-	return func(target any) {
-		if d, ok := target.(*toolDefinition); ok {
-			d.tool.Description = description
-		}
+	return func(d *toolDefinition) {
+		d.tool.Description = description
 	}
 }
 
+// ReadOnly marks a tool as making no observable change to the repository.
 func (toolBuilder) ReadOnly() toolOption {
-	return func(target any) {
-		if d, ok := target.(*toolDefinition); ok {
-			if d.tool.Annotations == nil {
-				d.tool.Annotations = &sdkmcp.ToolAnnotations{}
-			}
-			d.tool.Annotations.ReadOnlyHint = true
-			d.tool.Annotations.DestructiveHint = boolPtr(false)
-			d.tool.Annotations.OpenWorldHint = boolPtr(true)
+	return func(d *toolDefinition) {
+		if d.tool.Annotations == nil {
+			d.tool.Annotations = &sdkmcp.ToolAnnotations{}
+		}
+		d.tool.Annotations.ReadOnlyHint = true
+		d.tool.Annotations.DestructiveHint = boolPtr(false)
+		d.tool.Annotations.OpenWorldHint = boolPtr(true)
+	}
+}
+
+// Destructive marks a tool as mutating remote state or the local filesystem.
+func (toolBuilder) Destructive() toolOption {
+	return func(d *toolDefinition) {
+		if d.tool.Annotations == nil {
+			d.tool.Annotations = &sdkmcp.ToolAnnotations{}
+		}
+		d.tool.Annotations.DestructiveHint = boolPtr(true)
+		d.tool.Annotations.OpenWorldHint = boolPtr(true)
+	}
+}
+
+// combine applies several tool options as one, so a group of arguments that
+// always travel together can be declared in a single place.
+func combine(options ...toolOption) toolOption {
+	return func(d *toolDefinition) {
+		for _, option := range options {
+			option(d)
 		}
 	}
 }
 
-func (toolBuilder) Destructive() toolOption {
-	return func(target any) {
-		if d, ok := target.(*toolDefinition); ok {
-			if d.tool.Annotations == nil {
-				d.tool.Annotations = &sdkmcp.ToolAnnotations{}
-			}
-			d.tool.Annotations.DestructiveHint = boolPtr(true)
-			d.tool.Annotations.OpenWorldHint = boolPtr(true)
-		}
-	}
+// repoOverrides declares the optional "owner" and "repo" arguments that let a
+// single call target a repository other than the configured one. Every tool
+// accepts them, and it is one rule rather than twelve: a tool either supports
+// per-call repository overrides or it does not.
+func (b toolBuilder) repoOverrides() toolOption {
+	return combine(
+		b.WithString("owner",
+			b.Description("Optional: override repository owner for this call"),
+		),
+		b.WithString("repo",
+			b.Description("Optional: override repository name for this call"),
+		),
+	)
 }
 
 func boolPtr(value bool) *bool { return &value }
 
-func (toolBuilder) Description(description string) toolOption {
-	return func(target any) {
-		if property, ok := target.(*map[string]any); ok {
-			(*property)["description"] = description
-		}
+func (toolBuilder) Description(description string) propertyOption {
+	return func(p *propertyDefinition) {
+		p.property["description"] = description
 	}
 }
 
-func (toolBuilder) Required() toolOption {
-	return func(target any) {
-		if property, ok := target.(*propertyDefinition); ok {
-			property.required = true
-		}
+func (toolBuilder) Required() propertyOption {
+	return func(p *propertyDefinition) {
+		p.required = true
 	}
 }
 
-func (toolBuilder) DefaultString(value string) toolOption {
-	return func(target any) {
-		if property, ok := target.(*map[string]any); ok {
-			(*property)["default"] = value
-		}
+func (toolBuilder) DefaultString(value string) propertyOption {
+	return func(p *propertyDefinition) {
+		p.property["default"] = value
 	}
 }
 
-func (toolBuilder) DefaultNumber(value float64) toolOption {
-	return func(target any) {
-		if property, ok := target.(*map[string]any); ok {
-			(*property)["default"] = value
-		}
+func (toolBuilder) DefaultNumber(value float64) propertyOption {
+	return func(p *propertyDefinition) {
+		p.property["default"] = value
 	}
 }
 
-func (toolBuilder) Enum(values ...string) toolOption {
-	return func(target any) {
-		if property, ok := target.(*map[string]any); ok {
-			(*property)["enum"] = values
-		}
+// Enum restricts a property to the given values, in the given order. The order
+// is part of the wire contract.
+func (toolBuilder) Enum(values ...string) propertyOption {
+	return func(p *propertyDefinition) {
+		p.property["enum"] = values
 	}
 }
 
-func (toolBuilder) Minimum(value float64) toolOption {
-	return func(target any) {
-		if property, ok := target.(*map[string]any); ok {
-			(*property)["minimum"] = value
-		}
+func (toolBuilder) Minimum(value float64) propertyOption {
+	return func(p *propertyDefinition) {
+		p.property["minimum"] = value
 	}
 }
 
-func (toolBuilder) Maximum(value float64) toolOption {
-	return func(target any) {
-		if property, ok := target.(*map[string]any); ok {
-			(*property)["maximum"] = value
-		}
+func (toolBuilder) Maximum(value float64) propertyOption {
+	return func(p *propertyDefinition) {
+		p.property["maximum"] = value
 	}
 }
 
-type propertyDefinition struct {
-	property map[string]any
-	required bool
-}
-
-// The input types below are deliberately kept separate from the GitHub client
-// models. They are the MCP wire contracts: optional fields remain optional,
-// while the official SDK handles decoding and validation before invoking the
-// corresponding typed business handler.
-type repoInput struct {
-	Owner string `json:"owner,omitempty" jsonschema:"repository owner override"`
-	Repo  string `json:"repo,omitempty" jsonschema:"repository name override"`
-}
-
-type listWorkflowsInput struct {
-	repoInput
-	Limit  int    `json:"limit,omitempty"`
-	Format string `json:"format,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
-}
-
-type listWorkflowsOutput struct {
-	Workflows  []*appgithub.Workflow `json:"workflows"`
-	NextCursor string                `json:"next_cursor,omitempty"`
-}
-
-type listRunsInput struct {
-	repoInput
-	WorkflowID   any    `json:"workflow_id,omitempty"`
-	Branch       string `json:"branch,omitempty"`
-	Status       string `json:"status,omitempty"`
-	Conclusion   string `json:"conclusion,omitempty"`
-	PerPage      int    `json:"per_page,omitempty"`
-	CreatedAfter string `json:"created_after,omitempty"`
-	Event        string `json:"event,omitempty"`
-	Actor        string `json:"actor,omitempty"`
-	Format       string `json:"format,omitempty"`
-	Cursor       string `json:"cursor,omitempty"`
-}
-
-type listRunsOutput struct {
-	Runs       []any  `json:"runs"`
-	NextCursor string `json:"next_cursor,omitempty"`
-}
-
-type getRunInput struct {
-	repoInput
-	RunID         int64  `json:"run_id"`
-	Element       string `json:"element,omitempty"`
-	ArtifactID    *int64 `json:"artifact_id,omitempty"`
-	FilePattern   string `json:"file_pattern,omitempty"`
-	MaxFileSize   int64  `json:"max_file_size,omitempty"`
-	JobID         *int64 `json:"job_id,omitempty"`
-	PerJob        bool   `json:"per_job,omitempty"`
-	AttemptNumber *int64 `json:"attempt_number,omitempty"`
-	Head          *int64 `json:"head,omitempty"`
-	Tail          *int64 `json:"tail,omitempty"`
-	Offset        *int64 `json:"offset,omitempty"`
-	Search        string `json:"search,omitempty"`
-	SearchRegex   string `json:"search_regex,omitempty"`
-	Context       int    `json:"context,omitempty"`
-	NoHeaders     bool   `json:"no_headers,omitempty"`
-	Section       string `json:"section,omitempty"`
-	Format        string `json:"format,omitempty"`
-}
-
-type analyzeTimingInput struct {
-	repoInput
-	Workflow   string `json:"workflow,omitempty"`
-	RunID      *int64 `json:"run_id,omitempty"`
-	Branch     string `json:"branch,omitempty"`
-	JobName    string `json:"job_name,omitempty"`
-	StepName   string `json:"step_name,omitempty"`
-	Conclusion string `json:"conclusion,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
-}
-
-type checkStatusInput struct {
-	repoInput
-	Ref       string `json:"ref,omitempty"`
-	CheckName string `json:"check_name,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Filter    string `json:"filter,omitempty"`
-	Format    string `json:"format,omitempty"`
-}
-
-type waitRunInput struct {
-	repoInput
-	RunID          int64 `json:"run_id"`
-	TimeoutMinutes int   `json:"timeout_minutes,omitempty"`
-}
-
-type waitChecksInput struct {
-	repoInput
-	Ref            string `json:"ref,omitempty"`
-	TimeoutMinutes int    `json:"timeout_minutes,omitempty"`
-}
-
-type manageRunInput struct {
-	repoInput
-	RunID  int64  `json:"run_id"`
-	Action string `json:"action"`
-}
-
-type artifactInput struct {
-	repoInput
-	ArtifactID  int64  `json:"artifact_id"`
-	FilePattern string `json:"file_pattern,omitempty"`
-	MaxFileSize int64  `json:"max_file_size,omitempty"`
-}
-
-type diagnoseInput struct {
-	repoInput
-	RunID          *int64 `json:"run_id,omitempty"`
-	CheckFlakiness *bool  `json:"check_flakiness,omitempty"`
-	MaxErrorLines  int    `json:"max_error_lines,omitempty"`
-}
-
-type downloadArtifactInput struct {
-	repoInput
-	ArtifactID int64  `json:"artifact_id"`
-	OutputPath string `json:"output_path,omitempty"`
-	Overwrite  bool   `json:"overwrite,omitempty"`
-}
-
-func (toolBuilder) property(name string, typ any, options ...toolOption) toolOption {
-	return func(target any) {
-		d, ok := target.(*toolDefinition)
-		if !ok {
-			return
-		}
+// property adds one named property to the tool's input schema. A nil typ omits
+// the "type" keyword, which is how an argument that accepts several JSON types
+// is declared.
+func (toolBuilder) property(name string, typ any, options ...propertyOption) toolOption {
+	return func(d *toolDefinition) {
 		property := map[string]any{}
 		if typ != nil {
 			property["type"] = typ
@@ -264,7 +170,6 @@ func (toolBuilder) property(name string, typ any, options ...toolOption) toolOpt
 		definition := &propertyDefinition{property: property}
 		for _, option := range options {
 			option(definition)
-			option(&property)
 		}
 		d.properties[name] = property
 		if definition.required {
@@ -273,55 +178,27 @@ func (toolBuilder) property(name string, typ any, options ...toolOption) toolOpt
 	}
 }
 
-func (b toolBuilder) WithString(name string, options ...toolOption) toolOption {
+func (b toolBuilder) WithString(name string, options ...propertyOption) toolOption {
 	return b.property(name, "string", options...)
 }
 
-func (b toolBuilder) WithStringOrInteger(name string, options ...toolOption) toolOption {
-	return b.property(name, []string{"string", "integer"}, options...)
-}
-
-func (b toolBuilder) WithAny(name string, options ...toolOption) toolOption {
+func (b toolBuilder) WithAny(name string, options ...propertyOption) toolOption {
 	return b.property(name, nil, options...)
 }
 
-func (b toolBuilder) WithNumber(name string, options ...toolOption) toolOption {
+func (b toolBuilder) WithNumber(name string, options ...propertyOption) toolOption {
 	return b.property(name, "integer", options...)
 }
 
-func (b toolBuilder) WithBoolean(name string, options ...toolOption) toolOption {
+func (b toolBuilder) WithBoolean(name string, options ...propertyOption) toolOption {
 	return b.property(name, "boolean", options...)
 }
 
-// addTool registers an end-to-end typed SDK handler. The legacy wire request
-// is never reconstructed after the SDK has decoded and validated the input.
-func (s *MCPServer) addTool(tool *sdkmcp.Tool) {
-	switch tool.Name {
-	case "list_workflows":
-		sdkmcp.AddTool(s.srv, tool, s.listWorkflowsTyped)
-	case "list_runs":
-		sdkmcp.AddTool(s.srv, tool, s.listRunsTyped)
-	case "get_run":
-		sdkmcp.AddTool(s.srv, tool, s.getRunTyped)
-	case "analyze_timing":
-		sdkmcp.AddTool(s.srv, tool, s.analyzeTimingTyped)
-	case "get_check_status":
-		sdkmcp.AddTool(s.srv, tool, s.getCheckStatusTyped)
-	case "wait_for_run":
-		sdkmcp.AddTool(s.srv, tool, s.waitForRunTyped)
-	case "wait_all":
-		sdkmcp.AddTool(s.srv, tool, s.waitAllTyped)
-	case "wait_for_commit_checks":
-		sdkmcp.AddTool(s.srv, tool, s.waitForCommitChecksTyped)
-	case "manage_run":
-		sdkmcp.AddTool(s.srv, tool, s.manageRunTyped)
-	case "get_artifact":
-		sdkmcp.AddTool(s.srv, tool, s.getArtifactTyped)
-	case "diagnose_failure":
-		sdkmcp.AddTool(s.srv, tool, s.diagnoseFailureTyped)
-	case "download_artifact":
-		sdkmcp.AddTool(s.srv, tool, s.downloadArtifactTyped)
-	default:
-		panic("unknown tool: " + tool.Name)
-	}
+// addTool registers a tool together with its end-to-end typed handler. Binding
+// both in one call is what guarantees a declared tool cannot be served without a
+// handler, and the handler's input type is what the SDK decodes and validates
+// against before the business logic runs — the legacy wire request is never
+// reconstructed.
+func addTool[In, Out any](s *MCPServer, tool *sdkmcp.Tool, handler sdkmcp.ToolHandlerFor[In, Out]) {
+	sdkmcp.AddTool(s.srv, tool, handler)
 }

@@ -1,26 +1,56 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 )
 
+// Config is the fully resolved configuration. Every field is set by [Load]
+// (from a default, the config file, or the environment) before the value is
+// handed out, so a caller never has to distinguish "unset" from "zero" for a
+// field that has a default. It carries no locks: see the concurrency note in
+// the package documentation.
 type Config struct {
+	// ServerVersion is the version string reported over MCP. It is not read
+	// from configuration (mapstructure:"-"); package cmd sets it from the
+	// build version.
 	ServerVersion string `mapstructure:"-"`
-	Token         string `mapstructure:"token"`
-	RepoOwner     string `mapstructure:"repo_owner"`
-	RepoName      string `mapstructure:"repo_name"`
-	LogLevel      string `mapstructure:"log_level"`
-	DefaultLimit  int    `mapstructure:"default_limit"`
-	DefaultLogLen int    `mapstructure:"default_log_len"`
-	PerPageLimit  int    `mapstructure:"per_page_limit"`
-	RetryMax      int    `mapstructure:"retry_max"`
-	ArtifactRoot  string `mapstructure:"artifact_root"`
+	// Token is the credential used against the GitHub API — a GitHub token, or
+	// the password half of HTTP Basic auth when AuthUsername is set. Guaranteed
+	// non-empty only after [Config.ValidateToken] returns nil.
+	Token string `mapstructure:"token"`
+	// RepoOwner is the default repository owner. May be empty: tools that take
+	// an explicit owner do not need it.
+	RepoOwner string `mapstructure:"repo_owner"`
+	// RepoName is the default repository name, with the same caveat as
+	// RepoOwner.
+	RepoName string `mapstructure:"repo_name"`
+	// LogLevel is a logrus level name (debug, info, warn, error). Defaults to
+	// "info"; guaranteed non-empty.
+	LogLevel string `mapstructure:"log_level"`
+	// DefaultLimit is how many items a list tool returns when the caller does
+	// not say. Defaults to 10; guaranteed positive.
+	DefaultLimit int `mapstructure:"default_limit"`
+	// DefaultLogLen is how many log lines are returned when the caller does not
+	// say. Defaults to 100; guaranteed positive.
+	DefaultLogLen int `mapstructure:"default_log_len"`
+	// PerPageLimit is the page size requested from the GitHub API. Defaults to
+	// 50; guaranteed positive. GitHub itself caps this at 100.
+	PerPageLimit int `mapstructure:"per_page_limit"`
+	// RetryMax is how many times a safe (idempotent) GitHub read is retried
+	// after a transient failure. Defaults to 3; -1 disables retries entirely.
+	RetryMax int `mapstructure:"retry_max"`
+	// ArtifactRoot is the only directory download_artifact may write beneath.
+	// Defaults to "."; guaranteed non-empty, so there is always a boundary to
+	// enforce.
+	ArtifactRoot string `mapstructure:"artifact_root"`
+	// DefaultFormat selects the verbosity of formatted results: "minimal",
+	// "compact" or "full". Defaults to "compact"; guaranteed non-empty.
 	DefaultFormat string `mapstructure:"default_format"` // "minimal", "compact", "full"
 	// AuthUsername, when non-empty, switches from Bearer token auth to
 	// HTTP Basic auth (username:token). Required by some reverse proxies
@@ -40,90 +70,43 @@ type Config struct {
 	GitProxyDetect bool `mapstructure:"git_proxy_detect"`
 }
 
-var log = logrus.New()
-var keychainTokenProvider = getTokenFromKeychain
-var ghTokenProvider = getTokenFromGHCLI
+var (
+	log                   = logrus.New()
+	keychainTokenProvider = getTokenFromKeychain
+	ghTokenProvider       = getTokenFromGHCLI
+)
 
 func getTokenFromGHCLI() (string, error) {
-	output, err := exec.Command("gh", "auth", "token").Output()
+	// noctx wants exec.CommandContext, but the only caller chain is
+	// Config.ValidateToken, which is exported and takes no context. Passing
+	// context.Background() here would satisfy the linter without giving anyone
+	// the ability to cancel, so the honest answer is to say so.
+	output, err := exec.Command("gh", "auth", "token").Output() //nolint:noctx
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(output)), nil
 }
 
+// SetLogger replaces the logger this package writes to. It guarantees nothing
+// about concurrent use: call it once during startup, before any goroutine that
+// can trigger a config operation exists.
 func SetLogger(l *logrus.Logger) {
 	log = l
 }
 
+// Load resolves the effective configuration from defaults, a YAML config file
+// and the environment, in that order of increasing precedence. A missing config
+// file is not an error; a malformed one is. The returned Config always has
+// every default applied, so callers never see a zero value for a field that has
+// a default.
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
+	setDefaults(v)
+	bindEnvVars(v)
 
-	// Set defaults
-	v.SetDefault("log_level", "info")
-	v.SetDefault("token", "")
-	v.SetDefault("default_limit", 10)
-	v.SetDefault("default_log_len", 100)
-	v.SetDefault("per_page_limit", 50)
-	v.SetDefault("retry_max", 3)
-	v.SetDefault("artifact_root", ".")
-	v.SetDefault("default_format", "compact")
-	v.SetDefault("git_proxy_detect", true)
-
-	// Environment variables - support both GITHUB_* and GH_* prefixes
-	// GITHUB_* prefix takes precedence over GH_* prefix for backward compatibility
-	_ = v.BindEnv("token", "GITHUB_TOKEN", "GH_TOKEN")
-	_ = v.BindEnv("repo_owner", "GITHUB_REPO_OWNER", "GH_REPO_OWNER")
-	_ = v.BindEnv("repo_name", "GITHUB_REPO_NAME", "GH_REPO_NAME")
-	_ = v.BindEnv("log_level", "GITHUB_LOG_LEVEL", "GH_LOG_LEVEL")
-	_ = v.BindEnv("default_limit", "GITHUB_DEFAULT_LIMIT", "GH_DEFAULT_LIMIT")
-	_ = v.BindEnv("default_log_len", "GITHUB_DEFAULT_LOG_LEN", "GH_DEFAULT_LOG_LEN")
-	_ = v.BindEnv("per_page_limit", "GITHUB_PER_PAGE_LIMIT", "GH_PER_PAGE_LIMIT")
-	_ = v.BindEnv("retry_max", "GITHUB_RETRY_MAX", "GH_RETRY_MAX")
-	_ = v.BindEnv("artifact_root", "GITHUB_ARTIFACT_ROOT", "GH_ARTIFACT_ROOT")
-	_ = v.BindEnv("default_format", "GITHUB_DEFAULT_FORMAT", "GH_DEFAULT_FORMAT")
-	_ = v.BindEnv("auth_username", "GITHUB_AUTH_USERNAME", "GH_AUTH_USERNAME")
-	_ = v.BindEnv("api_base_url", "GITHUB_API_BASE_URL", "GH_API_BASE_URL")
-	_ = v.BindEnv("upload_url", "GITHUB_UPLOAD_URL", "GH_UPLOAD_URL")
-	_ = v.BindEnv("git_proxy_detect", "GITHUB_GIT_PROXY_DETECT", "GH_GIT_PROXY_DETECT")
-
-	// Config file. We support two modes:
-	//   1) Explicit path via --config / configPath: load that single file.
-	//   2) Default search: walk all candidate paths in priority order (cwd
-	//      wins, then user config dir, then /etc) and MERGE them. Later
-	//      layers fill in only the keys the earlier layers did not set, so
-	//      a project-local config.yaml can override repo_owner/repo_name
-	//      while still inheriting the global token (and vice versa).
-	if configPath != "" {
-		v.SetConfigFile(configPath)
-		if err := v.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-				log.Debugf("No config file found, using defaults and environment variables")
-			} else if configErr, ok := err.(viper.ConfigParseError); ok {
-				return nil, fmt.Errorf("config file syntax error: %w\nEnsure your config file is valid YAML format", configErr)
-			} else {
-				return nil, fmt.Errorf("failed to read config file: %w\nCheck file permissions and path", err)
-			}
-		}
-	} else {
-		// Only look in dedicated gh-actions-mcp config directories. We
-		// intentionally skip "." because running from a project's working
-		// directory (e.g. from inside another repo) would otherwise pick up
-		// that project's own config.yaml and silently ignore the global
-		// config. Use --config / -c to point at a project-local file.
-		v.SetConfigName("config")
-		v.SetConfigType("yaml")
-		v.AddConfigPath("$HOME/.config/gh-actions-mcp")
-		v.AddConfigPath("/etc/gh-actions-mcp")
-		if err := v.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-				log.Debugf("No config file found, using defaults and environment variables")
-			} else if configErr, ok := err.(viper.ConfigParseError); ok {
-				return nil, fmt.Errorf("config file syntax error: %w\nEnsure your config file is valid YAML format", configErr)
-			} else {
-				return nil, fmt.Errorf("failed to read config file: %w\nCheck file permissions and path", err)
-			}
-		}
+	if err := readConfigFile(v, configPath); err != nil {
+		return nil, err
 	}
 
 	var cfg Config
@@ -140,6 +123,79 @@ func Load(configPath string) (*Config, error) {
 
 	log.Debugf("Loaded config: owner=%s, repo=%s", cfg.RepoOwner, cfg.RepoName)
 	return &cfg, nil
+}
+
+// setDefaults declares the value every key takes when neither the config file
+// nor the environment sets it.
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("log_level", "info")
+	v.SetDefault("token", "")
+	v.SetDefault("default_limit", 10)
+	v.SetDefault("default_log_len", 100)
+	v.SetDefault("per_page_limit", 50)
+	v.SetDefault("retry_max", 3)
+	v.SetDefault("artifact_root", ".")
+	v.SetDefault("default_format", "compact")
+	v.SetDefault("git_proxy_detect", true)
+}
+
+// bindEnvVars binds every config key to its environment variables.
+// Both GITHUB_* and GH_* prefixes are supported; the GITHUB_* name is listed
+// first, and viper takes the first name that is set, so GITHUB_* wins.
+func bindEnvVars(v *viper.Viper) {
+	_ = v.BindEnv("token", "GITHUB_TOKEN", "GH_TOKEN")
+	_ = v.BindEnv("repo_owner", "GITHUB_REPO_OWNER", "GH_REPO_OWNER")
+	_ = v.BindEnv("repo_name", "GITHUB_REPO_NAME", "GH_REPO_NAME")
+	_ = v.BindEnv("log_level", "GITHUB_LOG_LEVEL", "GH_LOG_LEVEL")
+	_ = v.BindEnv("default_limit", "GITHUB_DEFAULT_LIMIT", "GH_DEFAULT_LIMIT")
+	_ = v.BindEnv("default_log_len", "GITHUB_DEFAULT_LOG_LEN", "GH_DEFAULT_LOG_LEN")
+	_ = v.BindEnv("per_page_limit", "GITHUB_PER_PAGE_LIMIT", "GH_PER_PAGE_LIMIT")
+	_ = v.BindEnv("retry_max", "GITHUB_RETRY_MAX", "GH_RETRY_MAX")
+	_ = v.BindEnv("artifact_root", "GITHUB_ARTIFACT_ROOT", "GH_ARTIFACT_ROOT")
+	_ = v.BindEnv("default_format", "GITHUB_DEFAULT_FORMAT", "GH_DEFAULT_FORMAT")
+	_ = v.BindEnv("auth_username", "GITHUB_AUTH_USERNAME", "GH_AUTH_USERNAME")
+	_ = v.BindEnv("api_base_url", "GITHUB_API_BASE_URL", "GH_API_BASE_URL")
+	_ = v.BindEnv("upload_url", "GITHUB_UPLOAD_URL", "GH_UPLOAD_URL")
+	_ = v.BindEnv("git_proxy_detect", "GITHUB_GIT_PROXY_DETECT", "GH_GIT_PROXY_DETECT")
+}
+
+// readConfigFile points viper at the config file and reads it. Two modes:
+//
+//  1. Explicit path via --config / configPath: load that single file.
+//  2. Default search: only the dedicated gh-actions-mcp config directories,
+//     in priority order. "." is intentionally NOT searched, because running
+//     from a project's working directory (e.g. from inside another repo)
+//     would otherwise pick up that project's own config.yaml and silently
+//     ignore the global config. Use --config / -c for a project-local file.
+//
+// A missing file is not an error: defaults and environment variables stand on
+// their own.
+func readConfigFile(v *viper.Viper, configPath string) error {
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+	} else {
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+		v.AddConfigPath("$HOME/.config/gh-actions-mcp")
+		v.AddConfigPath("/etc/gh-actions-mcp")
+	}
+
+	err := v.ReadInConfig()
+	if err == nil {
+		return nil
+	}
+
+	var notFound viper.ConfigFileNotFoundError
+	var parseErr viper.ConfigParseError
+	switch {
+	case errors.As(err, &notFound):
+		log.Debugf("No config file found, using defaults and environment variables")
+		return nil
+	case errors.As(err, &parseErr):
+		return fmt.Errorf("config file syntax error: %w\nEnsure your config file is valid YAML format", parseErr)
+	default:
+		return fmt.Errorf("failed to read config file: %w\nCheck file permissions and path", err)
+	}
 }
 
 // splitProxyCredentials handles tokens supplied as "username.token" against a
@@ -168,59 +224,11 @@ func (c *Config) splitProxyCredentials() {
 // SplitProxyCredentials is the exported variant of splitProxyCredentials for
 // callers that set APIBaseURL after Load returned (e.g. CLI flag overrides or
 // git proxy detection ordering).
+//
+// It guarantees idempotence: calling it twice is the same as calling it once,
+// which is what lets package cmd run it both before and after git proxy
+// detection. It never clears a field, and it never touches a token that carries
+// a GitHub prefix.
 func (c *Config) SplitProxyCredentials() {
 	c.splitProxyCredentials()
-}
-
-func (c *Config) Validate() error {
-	if err := c.ValidateToken(); err != nil {
-		return err
-	}
-	if c.RepoOwner == "" {
-		return fmt.Errorf("repository owner is required. Set GH_REPO_OWNER env var, 'repo_owner' in config, or use --repo-owner flag")
-	}
-	if c.RepoName == "" {
-		return fmt.Errorf("repository name is required. Set GH_REPO_NAME env var, 'repo_name' in config, or use --repo-name flag")
-	}
-	return nil
-}
-
-func (c *Config) ValidateToken() error {
-	if c.Token == "" {
-		// Try to get token from macOS keychain (only on macOS)
-		if runtime.GOOS == "darwin" {
-			if token, err := keychainTokenProvider(); err == nil {
-				c.Token = token
-				log.Infof("Obtained GitHub token from macOS keychain")
-			} else {
-				log.Debugf("Could not get token from keychain: %v", err)
-			}
-		}
-	}
-	if c.Token == "" {
-		if token, err := ghTokenProvider(); err == nil && token != "" {
-			c.Token = token
-			log.Infof("Obtained GitHub token from gh CLI authentication")
-		}
-	}
-
-	if c.Token == "" {
-		return fmt.Errorf("GitHub token is required. Set GITHUB_TOKEN, set 'token' in config, or run 'gh auth login'")
-	}
-	return nil
-}
-
-// IsAuthenticationError checks if an error is likely related to authentication
-func IsAuthenticationError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "401") ||
-		strings.Contains(errStr, "403") ||
-		strings.Contains(errStr, "bad credentials") ||
-		strings.Contains(errStr, "authentication") ||
-		strings.Contains(errStr, "resource not accessible by personal access token") ||
-		strings.Contains(errStr, "insufficient permission") ||
-		strings.Contains(errStr, "forbidden")
 }

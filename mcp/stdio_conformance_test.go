@@ -41,7 +41,7 @@ func TestStdioProcessConformance(t *testing.T) {
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "stdio-conformance-client", Version: "test"}, nil)
 	session, err := client.Connect(ctx, &sdkmcp.CommandTransport{Command: command}, nil)
 	require.NoError(t, err)
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	assert.Equal(t, "stdio-test", session.InitializeResult().ServerInfo.Version)
 
 	tools, err := session.ListTools(ctx, nil)

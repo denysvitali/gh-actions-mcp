@@ -14,16 +14,16 @@ const (
 
 // RepoInfo contains information about a repository
 type RepoInfo struct {
-	Owner   string `json:"owner"`
-	Repo    string `json:"repo"`
-	Source  string `json:"source"`  // How the repo was detected (e.g., "config", "git_remote")
-	Cached  bool   `json:"cached"`  // Whether this was from cache
-	RawURL  string `json:"raw_url"` // Original URL if from git remote
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Source string `json:"source"`  // How the repo was detected (e.g., "config", "git_remote")
+	Cached bool   `json:"cached"`  // Whether this was from cache
+	RawURL string `json:"raw_url"` // Original URL if from git remote
 }
 
 // RepoDetector handles repository detection with caching
 type RepoDetector struct {
-	mu    sync.RWMutex
+	mu    sync.RWMutex //nolint:forbidigo // Guards cache only; it is a leaf lock with no lock ordering.
 	cache *RepoInfo
 }
 
@@ -36,7 +36,7 @@ func NewRepoDetector() *RepoDetector {
 // It checks the current branch's tracking remote first, then falls back to "origin".
 func resolveRemoteName(repo *git.Repository) string {
 	head, err := repo.Head()
-	if err != nil {
+	if err != nil { //nolint:nestif // Fallback inference depends on the kind of local detection failure.
 		log.Debugf("Could not get HEAD: %v, falling back to origin", err)
 		return DefaultRemoteName
 	}
@@ -67,7 +67,7 @@ func resolveRemoteName(repo *git.Repository) string {
 // Detect attempts to detect the repository from git remote.
 // It uses the current branch's tracking remote if available, otherwise falls back to "origin".
 // Returns cached result if available, otherwise performs detection.
-func (d *RepoDetector) Detect() (*RepoInfo, error) {
+func (d *RepoDetector) Detect() (*RepoInfo, error) { //nolint:funlen,nestif // Detection keeps fallback and cache flow together.
 	// Check cache first
 	d.mu.RLock()
 	if d.cache != nil {
@@ -100,7 +100,7 @@ func (d *RepoDetector) Detect() (*RepoInfo, error) {
 	remoteName := resolveRemoteName(repo)
 
 	remote, err := repo.Remote(remoteName)
-	if err != nil {
+	if err != nil { //nolint:nestif // A missing custom remote has one explicit origin fallback.
 		// If the resolved remote doesn't exist and it's not origin, try origin as fallback
 		if remoteName != DefaultRemoteName {
 			log.Warnf("Remote %q not found, falling back to origin", remoteName)

@@ -84,7 +84,7 @@ type ClientOptions struct {
 }
 
 // NewClientWithOptions creates a new GitHub client using the provided options.
-func NewClientWithOptions(opts ClientOptions) (*Client, error) {
+func NewClientWithOptions(opts ClientOptions) (*Client, error) { //nolint:funlen,gocognit // Auth and URL options are assembled in one constructor.
 	if opts.PerPageLimit <= 0 {
 		opts.PerPageLimit = 50
 	}
@@ -115,7 +115,7 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) {
 		}
 	}
 	clientOpts = append(clientOpts, github.WithHTTPClient(hc))
-	if opts.APIBaseURL != "" {
+	if opts.APIBaseURL != "" { //nolint:nestif // URL normalization and optional upload URL validation belong together.
 		// Use WithURLs rather than WithEnterpriseURLs; the latter auto-
 		// appends "api/v3/" and breaks non-Enterprise proxies (e.g. gh-proxy,
 		// which expects "/api/repos/...").

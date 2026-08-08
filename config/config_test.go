@@ -1,10 +1,8 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -25,7 +23,7 @@ log_level: debug
 retry_max: 5
 artifact_root: /tmp/artifacts
 `
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	err := os.WriteFile(configPath, []byte(configContent), 0o644)
 	require.NoError(t, err)
 
 	cfg, err := Load(configPath)
@@ -49,18 +47,13 @@ token: file-token
 repo_owner: file-owner
 repo_name: file-repo
 `
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
+	err := os.WriteFile(configPath, []byte(configContent), 0o644)
 	require.NoError(t, err)
 
 	// Set environment variables
-	os.Setenv("GITHUB_TOKEN", "env-token")
-	os.Setenv("GH_REPO_OWNER", "env-owner")
-	os.Setenv("GH_REPO_NAME", "env-repo")
-	defer func() {
-		os.Unsetenv("GITHUB_TOKEN")
-		os.Unsetenv("GH_REPO_OWNER")
-		os.Unsetenv("GH_REPO_NAME")
-	}()
+	t.Setenv("GITHUB_TOKEN", "env-token")
+	t.Setenv("GH_REPO_OWNER", "env-owner")
+	t.Setenv("GH_REPO_NAME", "env-repo")
 
 	cfg, err := Load(configPath)
 	require.NoError(t, err)
@@ -76,7 +69,7 @@ func TestLoad_DefaultValues(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
 	// Create empty config file
-	err := os.WriteFile(configPath, []byte(""), 0644)
+	err := os.WriteFile(configPath, []byte(""), 0o644)
 	require.NoError(t, err)
 
 	cfg, err := Load(configPath)
@@ -84,131 +77,6 @@ func TestLoad_DefaultValues(t *testing.T) {
 
 	// Check defaults
 	assert.Equal(t, "info", cfg.LogLevel)
-}
-
-func TestConfig_Validate(t *testing.T) {
-	originalProvider := keychainTokenProvider
-	originalGHProvider := ghTokenProvider
-	keychainTokenProvider = func() (string, error) {
-		return "", errors.New("no token in test keychain")
-	}
-	ghTokenProvider = func() (string, error) {
-		return "", errors.New("not logged in during test")
-	}
-	t.Cleanup(func() {
-		keychainTokenProvider = originalProvider
-		ghTokenProvider = originalGHProvider
-	})
-
-	tests := []struct {
-		name      string
-		cfg       Config
-		wantError bool
-	}{
-		{
-			name: "valid config",
-			cfg: Config{
-				Token:     "token",
-				RepoOwner: "owner",
-				RepoName:  "repo",
-			},
-			wantError: false,
-		},
-		{
-			name: "missing token",
-			cfg: Config{
-				Token:     "",
-				RepoOwner: "owner",
-				RepoName:  "repo",
-			},
-			wantError: true,
-		},
-		{
-			name: "missing owner",
-			cfg: Config{
-				Token:     "token",
-				RepoOwner: "",
-				RepoName:  "repo",
-			},
-			wantError: true,
-		},
-		{
-			name: "missing name",
-			cfg: Config{
-				Token:     "token",
-				RepoOwner: "owner",
-				RepoName:  "",
-			},
-			wantError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.cfg.Validate()
-			if tt.wantError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestConfig_ValidateToken(t *testing.T) {
-	originalProvider := keychainTokenProvider
-	originalGHProvider := ghTokenProvider
-	keychainTokenProvider = func() (string, error) {
-		return "", errors.New("no token in test keychain")
-	}
-	ghTokenProvider = func() (string, error) { return "", errors.New("not logged in") }
-	t.Cleanup(func() {
-		keychainTokenProvider = originalProvider
-		ghTokenProvider = originalGHProvider
-	})
-
-	cfg := Config{Token: "token"}
-	require.NoError(t, cfg.ValidateToken())
-
-	cfg.Token = ""
-	require.Error(t, cfg.ValidateToken())
-}
-
-func TestConfig_ValidateToken_UsesGHCLIFallback(t *testing.T) {
-	originalProvider, originalKeychainProvider := ghTokenProvider, keychainTokenProvider
-	keychainTokenProvider = func() (string, error) { return "", errors.New("no keychain token") }
-	ghTokenProvider = func() (string, error) { return "gho_test-from-cli", nil }
-	t.Cleanup(func() {
-		ghTokenProvider = originalProvider
-		keychainTokenProvider = originalKeychainProvider
-	})
-
-	cfg := Config{}
-	require.NoError(t, cfg.ValidateToken())
-	assert.Equal(t, "gho_test-from-cli", cfg.Token)
-}
-
-func TestConfig_Validate_UsesKeychainProvider(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("keychain provider is only used on macOS")
-	}
-
-	originalProvider := keychainTokenProvider
-	keychainTokenProvider = func() (string, error) {
-		return "gho_test-from-keychain", nil
-	}
-	t.Cleanup(func() {
-		keychainTokenProvider = originalProvider
-	})
-
-	cfg := Config{
-		RepoOwner: "owner",
-		RepoName:  "repo",
-	}
-
-	err := cfg.Validate()
-	require.NoError(t, err)
-	assert.Equal(t, "gho_test-from-keychain", cfg.Token)
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
@@ -309,13 +177,8 @@ func TestLoad_GITHUB_PREFIX_EnvVars(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment variables
 			for k, v := range tt.envVars {
-				os.Setenv(k, v)
+				t.Setenv(k, v)
 			}
-			defer func() {
-				for k := range tt.envVars {
-					os.Unsetenv(k)
-				}
-			}()
 
 			cfg, err := Load("")
 			require.NoError(t, err)
@@ -360,16 +223,15 @@ func TestLoad_PerPageLimit(t *testing.T) {
 			configPath := filepath.Join(tmpDir, "config.yaml")
 
 			if tt.configContent != "" {
-				err := os.WriteFile(configPath, []byte(tt.configContent), 0644)
+				err := os.WriteFile(configPath, []byte(tt.configContent), 0o644)
 				require.NoError(t, err)
 			} else {
-				err := os.WriteFile(configPath, []byte(""), 0644)
+				err := os.WriteFile(configPath, []byte(""), 0o644)
 				require.NoError(t, err)
 			}
 
 			if tt.envValue != "" {
-				os.Setenv("GITHUB_PER_PAGE_LIMIT", tt.envValue)
-				defer os.Unsetenv("GITHUB_PER_PAGE_LIMIT")
+				t.Setenv("GITHUB_PER_PAGE_LIMIT", tt.envValue)
 			}
 
 			cfg, err := Load(configPath)
@@ -380,49 +242,9 @@ func TestLoad_PerPageLimit(t *testing.T) {
 	}
 }
 
-func TestIsAuthenticationError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{
-			name: "401 unauthorized",
-			err:  errors.New("failed request: HTTP 401"),
-			want: true,
-		},
-		{
-			name: "403 pat limitation",
-			err:  errors.New("403 Resource not accessible by personal access token"),
-			want: true,
-		},
-		{
-			name: "forbidden text",
-			err:  errors.New("forbidden by policy"),
-			want: true,
-		},
-		{
-			name: "non-auth error",
-			err:  errors.New("validation failed"),
-			want: false,
-		},
-		{
-			name: "nil error",
-			err:  nil,
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, IsAuthenticationError(tt.err))
-		})
-	}
-}
-
 func TestLoad_GitProxyDetectDefaultsToTrue(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte(""), 0644))
+	require.NoError(t, os.WriteFile(configPath, []byte(""), 0o644))
 
 	cfg, err := Load(configPath)
 	require.NoError(t, err)
@@ -431,7 +253,7 @@ func TestLoad_GitProxyDetectDefaultsToTrue(t *testing.T) {
 
 func TestLoad_GitProxyDetectFromConfigAndEnv(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte("git_proxy_detect: false\n"), 0644))
+	require.NoError(t, os.WriteFile(configPath, []byte("git_proxy_detect: false\n"), 0o644))
 
 	cfg, err := Load(configPath)
 	require.NoError(t, err)
@@ -445,7 +267,7 @@ func TestLoad_GitProxyDetectFromConfigAndEnv(t *testing.T) {
 
 func TestLoad_APIBaseURLEnv(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(configPath, []byte(""), 0644))
+	require.NoError(t, os.WriteFile(configPath, []byte(""), 0o644))
 
 	t.Setenv("GH_API_BASE_URL", "http://gh-proxy.local/api/")
 	t.Setenv("GH_UPLOAD_URL", "http://gh-proxy.local/api/uploads/")

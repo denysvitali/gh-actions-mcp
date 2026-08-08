@@ -18,8 +18,10 @@ import (
 //
 // Run with: go test -tags live ./tests/ -run Live -v
 
-const liveProxyOwner = "denysvitali"
-const liveProxyRepo = "gh-actions-mcp"
+const (
+	liveProxyOwner = "denysvitali"
+	liveProxyRepo  = "gh-actions-mcp"
+)
 
 // newLiveProxyClient derives the API base URL and credentials from git's
 // url.<proxy>.insteadOf rules, exactly like the CLI's proxy detection.

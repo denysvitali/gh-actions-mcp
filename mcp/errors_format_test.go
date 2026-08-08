@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,4 +163,61 @@ func TestFormatAuthErrorRepoResolution(t *testing.T) {
 	assert.Contains(t, server.formatAuthError(err, "failed"), "GitHub returned 404 for cfg-owner/cfg-repo.")
 	assert.Contains(t, server.formatAuthErrorForRepo(err, "failed", "arg-owner", "arg-repo"),
 		"GitHub returned 404 for arg-owner/arg-repo.")
+}
+
+func TestFormatAuthError_PermissionHints(t *testing.T) {
+	server := &MCPServer{
+		config: &config.Config{
+			RepoOwner: "example-owner",
+			RepoName:  "example-repo",
+		},
+	}
+
+	tests := []struct {
+		name     string
+		msg      string
+		err      error
+		contains []string
+	}{
+		{
+			name: "403 PAT limitation",
+			msg:  "failed to get check status",
+			err:  errors.New("GET https://api.github.com/repos/example-owner/example-repo/commits/abc/check-runs: 403 Resource not accessible by personal access token []"),
+			contains: []string{
+				"GitHub rejected the token for this endpoint",
+				"Actions: Read",
+				"'repo' scope",
+			},
+		},
+		{
+			name: "401 unauthorized logs",
+			msg:  "failed to get logs for run 123",
+			err:  errors.New("failed to get workflow logs: HTTP 401 (log access unauthorized)"),
+			contains: []string{
+				"GitHub rejected authentication",
+				"example-owner/example-repo",
+				"read Actions data",
+			},
+		},
+		{
+			name: "404 not found or hidden",
+			msg:  "failed to get logs for run 456",
+			err:  errors.New("failed to get workflow log URL for run 456: unexpected status code: 404 Not Found"),
+			contains: []string{
+				"GitHub returned 404",
+				"not in this repository",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := server.formatAuthError(tc.err, tc.msg)
+			for _, c := range tc.contains {
+				assert.Contains(t, out, c)
+			}
+			// Ensure test data stays sanitized.
+			assert.False(t, strings.Contains(strings.ToLower(out), "example-secret-repo"))
+		})
+	}
 }

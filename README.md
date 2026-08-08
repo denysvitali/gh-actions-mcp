@@ -28,15 +28,18 @@ make install
 The server requires a GitHub personal access token. Token sources (in order of precedence):
 
 1. `--token` command line flag
-2. `GITHUB_TOKEN` environment variable
+2. `GITHUB_TOKEN` environment variable (or `GH_TOKEN`)
 3. `token` field in config file
-4. macOS Keychain (automatic, if you've authenticated with `gh auth login`)
+4. macOS Keychain (macOS only, automatic, if you've authenticated with `gh auth login`)
+5. `gh auth token` from the GitHub CLI (any platform, if you've run `gh auth login`)
 
 #### macOS Keychain Integration
 
 On macOS, if no token is provided via the above methods, the server will automatically attempt to retrieve your GitHub token from the system keychain. This works seamlessly if you've previously authenticated using the GitHub CLI (`gh auth login`).
 
 No additional configuration is required - just run `gh auth login` once and the token will be available to this MCP server.
+
+On Linux and Windows there is no keychain step, but the `gh auth token` fallback still applies, so `gh auth login` is enough there too.
 
 ### Config File
 
@@ -112,7 +115,7 @@ GH_ACTIONS_MCP_HTTP_TOKEN=change-me \
   gh-actions-mcp --transport http --http-address 0.0.0.0:8080
 ```
 
-Clients must then send `Authorization: Bearer change-me`. Cross-origin and localhost protections from the official Go SDK remain enabled.
+Clients must then send `Authorization: Bearer change-me`; anything else gets `401`. The server refuses to start at all on a non-loopback address without a bearer token. Cross-origin protection is also enabled: a browser request carrying an untrusted `Origin` header is rejected with `403` unless that origin is listed with `--http-allowed-origin`.
 
 For direct production exposure, configure TLS and explicitly trusted browser origins:
 
@@ -147,6 +150,26 @@ Add to your `claude_desktop_config.json`:
 **Note for macOS users:** If you've authenticated with `gh auth login`, you can omit the `env` block entirely - the token will be retrieved from your keychain automatically.
 
 ## Available Tools
+
+Twelve tools are registered. `owner` and `repo` are optional on every one of
+them and fall back to the configured repository.
+
+| Tool | Required arguments | Purpose |
+|---|---|---|
+| `get_check_status` | — | Check status for a branch, tag, or commit |
+| `list_workflows` | — | List the repository's workflows |
+| `list_runs` | — | List runs, optionally filtered by workflow |
+| `get_run` | `run_id` | One run: info, jobs, logs, log files, log sections, artifacts, or artifact content |
+| `analyze_timing` | — | Compare workflow/job/step durations against recent history |
+| `diagnose_failure` | — | One-shot diagnosis of a failed run |
+| `manage_run` | `run_id`, `action` | Cancel, rerun, or rerun failed jobs |
+| `wait_for_run` | `run_id` | Wait for a run, returning early on failure |
+| `wait_all` | `run_id` | Wait for every job, regardless of outcome |
+| `wait_for_commit_checks` | — | Wait for all check runs on a ref |
+| `get_artifact` | `artifact_id` | Read artifact contents without writing to disk |
+| `download_artifact` | `artifact_id` | Write an artifact beneath `artifact_root` |
+
+The sections below detail the most commonly used ones.
 
 ### get_check_status
 
@@ -227,6 +250,35 @@ gh-actions-mcp tool list_runs --args '{"owner":"example-org","repo":"example-rep
 gh-actions-mcp tool analyze_timing --args '{"owner":"example-org","repo":"example-repo","workflow":"CI","limit":10}'
 ```
 
+Arguments are validated against the tool's schema before GitHub is contacted, so
+a bad enum value, a missing required argument, or a number outside its range
+fails locally.
+
+### CLI Log Viewer
+
+`gh-actions-mcp logs` fetches and filters logs without going through MCP. It
+takes a GitHub Actions run URL, a job URL, or a bare numeric run id:
+
+```bash
+# whole run
+gh-actions-mcp logs 21662021288
+
+# a single job, from a URL
+gh-actions-mcp logs https://github.com/owner/repo/actions/runs/21662021288/job/62449039965
+
+# a single job, from a run id
+gh-actions-mcp logs 21662021288 --job-id 62449039965
+
+# filter
+gh-actions-mcp logs 21662021288 --search "OTA task started" --context 2
+gh-actions-mcp logs 21662021288 --regex "OTA.*started"
+gh-actions-mcp logs 21662021288 --section "Flash and soak test"
+```
+
+Flags: `--search`/`-s`, `--regex`, `--section`, `--context`/`-C`, `--head`,
+`--tail`, `--offset`, `--no-headers`, `--job-id`/`-j`, `--owner`, `--repo`.
+When no line matches, it prints `(no matching logs)`.
+
 ### manage_run
 
 Cancel or rerun an existing workflow run.
@@ -295,15 +347,11 @@ For public repositories, the `public_repo` scope may be sufficient for read-only
 
 ## API Rate Limit Handling
 
-This tool uses the official GitHub Go library, which handles rate limiting automatically:
+GitHub's own limits apply: 5,000 requests per hour for authenticated requests, 60 per hour unauthenticated.
 
-- **Authenticated requests**: 5,000 requests per hour
-- **Unauthenticated requests**: 60 requests per hour
-
-The library will automatically respect GitHub's rate limit headers and will return errors if the limit is exceeded. To avoid hitting rate limits:
+This server's retry transport honours `Retry-After` and `X-RateLimit-Reset` on safe (`GET`/`HEAD`) requests only, retrying HTTP 429, 502, 503, 504 and rate-limited 403s with a bounded, jittered delay. Mutating requests are never replayed, and once retries are exhausted the error is returned to the caller. To avoid hitting rate limits:
 
 - Use the `per_page_limit` configuration option to reduce the number of items fetched per request
-- Cache results when making multiple calls in succession
 - Use a valid GitHub token for higher rate limits
 
 ## Timeout Behavior for Workflows
@@ -328,11 +376,12 @@ The tool will return a timeout error if the workflow doesn't complete within the
 ### Example 1: Check CI Status Before Deploying
 
 ```json
-// Get the current status
+// Get the current status for a branch
 {
   "name": "get_check_status",
   "arguments": {
-    "limit": 5
+    "ref": "main",
+    "filter": "latest"
   }
 }
 ```
@@ -411,6 +460,13 @@ The server supports both `GITHUB_*` and `GH_*` prefixed environment variables fo
 | default_limit | `GITHUB_DEFAULT_LIMIT` | `GH_DEFAULT_LIMIT` | Default list limit (default: 10) |
 | default_log_len | `GITHUB_DEFAULT_LOG_LEN` | `GH_DEFAULT_LOG_LEN` | Default log line limit (default: 100) |
 | per_page_limit | `GITHUB_PER_PAGE_LIMIT` | `GH_PER_PAGE_LIMIT` | API per-page limit (default: 50) |
+| retry_max | `GITHUB_RETRY_MAX` | `GH_RETRY_MAX` | Retries for safe reads (default: 3, `-1` disables) |
+| artifact_root | `GITHUB_ARTIFACT_ROOT` | `GH_ARTIFACT_ROOT` | Directory `download_artifact` may write beneath (default: `.`) |
+| default_format | `GITHUB_DEFAULT_FORMAT` | `GH_DEFAULT_FORMAT` | Result verbosity: minimal, compact, full (default: compact) |
+| auth_username | `GITHUB_AUTH_USERNAME` | `GH_AUTH_USERNAME` | Switches to HTTP Basic auth (reverse proxies) |
+| api_base_url | `GITHUB_API_BASE_URL` | `GH_API_BASE_URL` | Override the API base URL (trailing slash required) |
+| upload_url | `GITHUB_UPLOAD_URL` | `GH_UPLOAD_URL` | Override the upload URL (defaults to `api_base_url`) |
+| git_proxy_detect | `GITHUB_GIT_PROXY_DETECT` | `GH_GIT_PROXY_DETECT` | Derive `api_base_url` from git `insteadOf` rules (default: true) |
 
 The `GITHUB_*` prefixed variables take precedence over `GH_*` prefixed variables.
 
@@ -470,7 +526,7 @@ Once authenticated, the MCP server will automatically use your stored credential
 
 The project uses build tags to separate integration tests from unit tests:
 
-- **Integration tests**: Require the `integration` build tag and network access to GitHub
+- **Integration tests**: Require the `integration` build tag, a `GITHUB_TOKEN`, and network access to GitHub. Without a token they skip rather than fail.
 - **Unit tests**: Run without build tags and don't require network access
 
 Run all tests (including integration):
@@ -483,19 +539,27 @@ Run only unit tests:
 go test ./...
 ```
 
+Run the tests the way CI does — race detector, vet, formatting and linters:
+```bash
+go vet ./...
+go test -race ./...
+gofumpt -l .
+golangci-lint run ./...
+```
+
 ### Building
 
 ```bash
-# Build for your current platform
+# Build ./gh-actions-mcp for your current platform
 make build
 
-# Build for specific platforms
-make build-linux
-make build-macos
-make build-windows
-
-# Install to $GOPATH/bin or $HOME/.local/bin
+# Install into $GOBIN (or $GOPATH/bin when GOBIN is unset)
 make install
+```
+
+Cross-compile with the standard Go environment variables:
+```bash
+GOOS=linux GOARCH=amd64 go build -o gh-actions-mcp-linux-amd64 .
 ```
 
 ## License

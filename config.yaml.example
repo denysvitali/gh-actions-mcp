@@ -17,6 +17,13 @@ repo_name: repo
 # Log level: debug, info, warn, error
 log_level: info
 
+# Optional result-shaping defaults. The values shown are the built-in defaults.
+# Env vars: GITHUB_<NAME> / GH_<NAME>, e.g. GITHUB_PER_PAGE_LIMIT.
+# default_limit: 10       # items a list tool returns when the caller does not say
+# default_log_len: 100    # log lines returned when the caller does not say
+# per_page_limit: 50      # GitHub API page size (GitHub caps this at 100)
+# default_format: compact # result verbosity: minimal, compact, full
+
 # Retry safe GitHub API reads after transient failures or rate limits.
 # Set to -1 to disable retries. Env: GITHUB_RETRY_MAX / GH_RETRY_MAX
 retry_max: 3
@@ -31,6 +38,12 @@ artifact_root: .
 # Env vars: GITHUB_API_BASE_URL / GH_API_BASE_URL, GITHUB_UPLOAD_URL / GH_UPLOAD_URL
 # api_base_url: http://gh-proxy:8080/api/
 # upload_url: http://gh-proxy:8080/api/uploads/
+
+# Optional: use HTTP Basic auth (username + token above) instead of a Bearer
+# token. Required by some reverse proxies. A token written as "user.secret"
+# alongside an api_base_url is split into these two automatically.
+# Env vars: GITHUB_AUTH_USERNAME / GH_AUTH_USERNAME
+# auth_username: my-proxy-user
 
 # Optional: derive api_base_url and Basic-auth credentials automatically from
 # git's url.<proxy>.insteadOf rewrite rules (gh-proxy). Enabled by default;

@@ -31,7 +31,7 @@ func GetCurrentBranch() (string, error) {
 		return "", nil
 	}
 
-	return string(head.Name().Short()), nil
+	return head.Name().Short(), nil
 }
 
 // CommitInfo contains information about a git commit

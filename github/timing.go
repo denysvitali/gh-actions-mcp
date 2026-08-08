@@ -73,7 +73,38 @@ type TimingAnalysis struct {
 	StepBreakdown []*TimingBreakdownItem `json:"step_breakdown,omitempty"`
 }
 
-// AnalyzeTiming compares workflow, job, or step durations across recent runs.
+// timingScope names the granularity a TimingAnalysis was computed at.
+const (
+	timingScopeWorkflow = "workflow"
+	timingScopeJob      = "job"
+	timingScopeStep     = "step"
+)
+
+// defaultTimingLimit is how many recent runs are sampled when Limit is unset.
+const defaultTimingLimit = 10
+
+// timingTarget is the resolved workflow the analysis runs against, plus the
+// optional focus run the caller asked to compare.
+type timingTarget struct {
+	workflowID   int64
+	workflowName string
+	// focusRun is nil when the caller did not pin a run; the newest sampled run
+	// then becomes the focus.
+	focusRun *WorkflowRun
+}
+
+// AnalyzeTiming compares workflow, job, or step durations across recent runs of
+// one workflow.
+//
+// Scope is derived from opts: StepName selects "step" (and requires JobName),
+// JobName alone selects "job", neither selects "workflow". Exactly one of
+// opts.RunID and opts.Workflow must identify the workflow; when RunID is given
+// the run must already be completed and, if Workflow is also given, the two must
+// agree.
+//
+// It returns an error when nothing matches: no completed runs with timing data,
+// no samples for the requested scope, or a focus run that does not contain the
+// requested job or step.
 func (c *Client) AnalyzeTiming(ctx context.Context, opts *TimingAnalysisOptions) (*TimingAnalysis, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("timing analysis options are required")
@@ -84,108 +115,35 @@ func (c *Client) AnalyzeTiming(ctx context.Context, opts *TimingAnalysisOptions)
 
 	limit := opts.Limit
 	if limit <= 0 {
-		limit = 10
+		limit = defaultTimingLimit
 	}
+	scope := timingScopeFor(opts)
 
-	scope := "workflow"
-	if opts.StepName != "" {
-		scope = "step"
-	} else if opts.JobName != "" {
-		scope = "job"
-	}
-
-	var (
-		focusRun     *WorkflowRun
-		workflowID   int64
-		workflowName string
-		err          error
-	)
-
-	workflowSelector := strings.TrimSpace(opts.Workflow)
-	if opts.RunID > 0 {
-		focusRun, err = c.GetWorkflowRun(ctx, opts.RunID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get workflow run %d: %w", opts.RunID, err)
-		}
-		if focusRun.Status != "completed" {
-			return nil, fmt.Errorf("workflow run %d is %s; timing analysis requires a completed run", opts.RunID, focusRun.Status)
-		}
-		if workflowSelector != "" {
-			workflowID, workflowName, err = c.ResolveWorkflowID(ctx, workflowSelector)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve workflow %q: %w", workflowSelector, err)
-			}
-			if workflowID != focusRun.WorkflowID {
-				return nil, fmt.Errorf("run %d belongs to workflow %q (%d), not %q (%d)", opts.RunID, focusRun.Name, focusRun.WorkflowID, workflowName, workflowID)
-			}
-		} else {
-			workflowID = focusRun.WorkflowID
-			workflowName = focusRun.Name
-		}
-		if opts.Conclusion != "" && focusRun.Conclusion != opts.Conclusion {
-			return nil, fmt.Errorf("run %d concluded as %s, which does not match conclusion filter %q", opts.RunID, focusRun.Conclusion, opts.Conclusion)
-		}
-	} else {
-		if workflowSelector == "" {
-			return nil, fmt.Errorf("workflow is required when run_id is not provided")
-		}
-		workflowID, workflowName, err = c.ResolveWorkflowID(ctx, workflowSelector)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve workflow %q: %w", workflowSelector, err)
-		}
-	}
-
-	runs, err := c.listWorkflowRunsForTiming(ctx, workflowID, opts.Branch, limit)
+	target, err := c.resolveTimingTarget(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	filteredRuns := make([]*WorkflowRun, 0, len(runs)+1)
-	for _, run := range runs {
-		if !matchesTimingRun(run, opts.Conclusion) {
-			continue
-		}
-		filteredRuns = append(filteredRuns, run)
+	runs, err := c.sampledTimingRuns(ctx, opts, target, limit)
+	if err != nil {
+		return nil, err
 	}
-	if focusRun != nil && matchesTimingRun(focusRun, opts.Conclusion) {
-		filteredRuns = appendTimingRunIfMissing(filteredRuns, focusRun)
-	}
-
-	sort.Slice(filteredRuns, func(i, j int) bool {
-		return filteredRuns[i].RunNumber > filteredRuns[j].RunNumber
-	})
-	filteredRuns = limitTimingRuns(filteredRuns, limit, opts.RunID)
-
-	if len(filteredRuns) == 0 {
-		return nil, fmt.Errorf("no completed runs with timing data found for workflow %q", workflowName)
-	}
-
+	focusRun := target.focusRun
 	if focusRun == nil {
-		focusRun = filteredRuns[0]
+		focusRun = runs[0]
 	}
 
-	jobsByRun := make(map[int64][]*Job, len(filteredRuns))
-	for _, run := range filteredRuns {
-		jobs, err := c.GetWorkflowJobs(ctx, run.ID, "", 0)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get jobs for run %d: %w", run.ID, err)
-		}
-		jobsByRun[run.ID] = jobs
+	jobsByRun, err := c.jobsForTimingRuns(ctx, runs)
+	if err != nil {
+		return nil, err
 	}
 
-	samples := make([]*TimingSample, 0, len(filteredRuns))
-	for _, run := range filteredRuns {
-		sample, err := timingSampleForScope(run, jobsByRun[run.ID], scope, opts.JobName, opts.StepName)
-		if err != nil {
-			return nil, err
-		}
-		if sample != nil {
-			samples = append(samples, sample)
-		}
+	samples, err := timingSamples(runs, jobsByRun, scope, opts.JobName, opts.StepName)
+	if err != nil {
+		return nil, err
 	}
-
 	if len(samples) == 0 {
-		return nil, fmt.Errorf("no timing samples matched scope %q for workflow %q", scope, workflowName)
+		return nil, fmt.Errorf("no timing samples matched scope %q for workflow %q", scope, target.workflowName)
 	}
 
 	focusIndex := indexOfTimingSample(samples, focusRun.ID)
@@ -193,33 +151,157 @@ func (c *Client) AnalyzeTiming(ctx context.Context, opts *TimingAnalysisOptions)
 		return nil, fmt.Errorf("run %d does not include the requested %s", focusRun.ID, scope)
 	}
 
-	baselineSamples := samplesExcludingIndex(samples, focusIndex)
-	if len(baselineSamples) == 0 {
-		baselineSamples = samples
-	}
-
 	analysis := &TimingAnalysis{
 		Scope:         scope,
-		WorkflowID:    workflowID,
-		WorkflowName:  workflowName,
+		WorkflowID:    target.workflowID,
+		WorkflowName:  target.workflowName,
 		Branch:        opts.Branch,
 		JobName:       opts.JobName,
 		StepName:      opts.StepName,
 		SampleCount:   len(samples),
 		Statistics:    timingStatsFromSamples(samples),
-		Focus:         compareTimingSample(samples[focusIndex], timingStatsFromSamples(baselineSamples), previousTimingSample(samples, focusIndex)),
+		Focus:         focusComparison(samples, focusIndex),
 		RecentSamples: samples,
 	}
+	addTimingBreakdowns(analysis, scope, jobsByRun, focusRun.ID, opts.JobName)
+	return analysis, nil
+}
 
-	switch scope {
-	case "workflow":
-		analysis.JobBreakdown = buildJobBreakdown(jobsByRun, focusRun.ID)
-		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRun.ID, opts.JobName)
-	case "job":
-		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRun.ID, opts.JobName)
+// timingScopeFor derives the analysis scope from the requested filters.
+func timingScopeFor(opts *TimingAnalysisOptions) string {
+	switch {
+	case opts.StepName != "":
+		return timingScopeStep
+	case opts.JobName != "":
+		return timingScopeJob
+	default:
+		return timingScopeWorkflow
+	}
+}
+
+// resolveTimingTarget determines which workflow to analyse, and validates the
+// focus run against the caller's filters when one was pinned.
+func (c *Client) resolveTimingTarget(ctx context.Context, opts *TimingAnalysisOptions) (timingTarget, error) {
+	selector := strings.TrimSpace(opts.Workflow)
+
+	if opts.RunID <= 0 {
+		if selector == "" {
+			return timingTarget{}, fmt.Errorf("workflow is required when run_id is not provided")
+		}
+		id, name, err := c.ResolveWorkflowID(ctx, selector)
+		if err != nil {
+			return timingTarget{}, fmt.Errorf("failed to resolve workflow %q: %w", selector, err)
+		}
+		return timingTarget{workflowID: id, workflowName: name}, nil
 	}
 
-	return analysis, nil
+	focusRun, err := c.GetWorkflowRun(ctx, opts.RunID)
+	if err != nil {
+		return timingTarget{}, fmt.Errorf("failed to get workflow run %d: %w", opts.RunID, err)
+	}
+	if focusRun.Status != "completed" {
+		return timingTarget{}, fmt.Errorf("workflow run %d is %s; timing analysis requires a completed run", opts.RunID, focusRun.Status)
+	}
+
+	target := timingTarget{workflowID: focusRun.WorkflowID, workflowName: focusRun.Name, focusRun: focusRun}
+	if selector != "" {
+		id, name, err := c.ResolveWorkflowID(ctx, selector)
+		if err != nil {
+			return timingTarget{}, fmt.Errorf("failed to resolve workflow %q: %w", selector, err)
+		}
+		if id != focusRun.WorkflowID {
+			return timingTarget{}, fmt.Errorf("run %d belongs to workflow %q (%d), not %q (%d)", opts.RunID, focusRun.Name, focusRun.WorkflowID, name, id)
+		}
+		target.workflowID, target.workflowName = id, name
+	}
+	if opts.Conclusion != "" && focusRun.Conclusion != opts.Conclusion {
+		return timingTarget{}, fmt.Errorf("run %d concluded as %s, which does not match conclusion filter %q", opts.RunID, focusRun.Conclusion, opts.Conclusion)
+	}
+	return target, nil
+}
+
+// sampledTimingRuns fetches recent runs, drops those without usable timing data,
+// re-adds the focus run if the page missed it, and trims to limit newest-first.
+// The returned slice is never empty.
+func (c *Client) sampledTimingRuns(ctx context.Context, opts *TimingAnalysisOptions, target timingTarget, limit int) ([]*WorkflowRun, error) {
+	runs, err := c.listWorkflowRunsForTiming(ctx, target.workflowID, opts.Branch, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]*WorkflowRun, 0, len(runs)+1)
+	for _, run := range runs {
+		if matchesTimingRun(run, opts.Conclusion) {
+			filtered = append(filtered, run)
+		}
+	}
+	if target.focusRun != nil && matchesTimingRun(target.focusRun, opts.Conclusion) {
+		filtered = appendTimingRunIfMissing(filtered, target.focusRun)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].RunNumber > filtered[j].RunNumber
+	})
+	filtered = limitTimingRuns(filtered, limit, opts.RunID)
+
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("no completed runs with timing data found for workflow %q", target.workflowName)
+	}
+	return filtered, nil
+}
+
+// jobsForTimingRuns fetches the job list of every sampled run. One failure aborts
+// the whole analysis: a partial baseline would silently skew every delta.
+func (c *Client) jobsForTimingRuns(ctx context.Context, runs []*WorkflowRun) (map[int64][]*Job, error) {
+	jobsByRun := make(map[int64][]*Job, len(runs))
+	for _, run := range runs {
+		jobs, err := c.GetWorkflowJobs(ctx, run.ID, "", 0)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get jobs for run %d: %w", run.ID, err)
+		}
+		jobsByRun[run.ID] = jobs
+	}
+	return jobsByRun, nil
+}
+
+// timingSamples reduces each run to one duration for the requested scope. Runs
+// that do not contain the requested job or step contribute no sample, so the
+// result can be shorter than runs.
+func timingSamples(runs []*WorkflowRun, jobsByRun map[int64][]*Job, scope, jobName, stepName string) ([]*TimingSample, error) {
+	samples := make([]*TimingSample, 0, len(runs))
+	for _, run := range runs {
+		sample, err := timingSampleForScope(run, jobsByRun[run.ID], scope, jobName, stepName)
+		if err != nil {
+			return nil, err
+		}
+		if sample != nil {
+			samples = append(samples, sample)
+		}
+	}
+	return samples, nil
+}
+
+// focusComparison compares the focus sample against the other samples. With only
+// one sample the focus is its own baseline, so the deltas are zero rather than
+// undefined.
+func focusComparison(samples []*TimingSample, focusIndex int) *TimingComparison {
+	baseline := samplesExcludingIndex(samples, focusIndex)
+	if len(baseline) == 0 {
+		baseline = samples
+	}
+	return compareTimingSample(samples[focusIndex], timingStatsFromSamples(baseline), previousTimingSample(samples, focusIndex))
+}
+
+// addTimingBreakdowns attaches the per-job and per-step breakdowns that make
+// sense for the scope. Step scope gets none: the sample already *is* one step.
+func addTimingBreakdowns(analysis *TimingAnalysis, scope string, jobsByRun map[int64][]*Job, focusRunID int64, jobName string) {
+	switch scope {
+	case timingScopeWorkflow:
+		analysis.JobBreakdown = buildJobBreakdown(jobsByRun, focusRunID)
+		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRunID, jobName)
+	case timingScopeJob:
+		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRunID, jobName)
+	}
 }
 
 func (c *Client) listWorkflowRunsForTiming(ctx context.Context, workflowID int64, branch string, limit int) ([]*WorkflowRun, error) {
@@ -303,20 +385,20 @@ func limitTimingRuns(runs []*WorkflowRun, limit int, focusRunID int64) []*Workfl
 	return limited
 }
 
+// timingSampleForScope reduces one run to the single duration the scope asks for.
+// A nil sample (with a nil error) means "this run has nothing to contribute":
+// the job or step is absent, or its duration is unknown.
 func timingSampleForScope(run *WorkflowRun, jobs []*Job, scope, jobName, stepName string) (*TimingSample, error) {
 	switch scope {
-	case "workflow":
+	case timingScopeWorkflow:
 		return newTimingSample(run, run.DurationSeconds), nil
-	case "job":
+	case timingScopeJob:
 		job := findJobByName(jobs, jobName)
-		if job == nil {
-			return nil, nil
-		}
-		if job.DurationSeconds <= 0 {
+		if job == nil || job.DurationSeconds <= 0 {
 			return nil, nil
 		}
 		return newTimingSample(run, job.DurationSeconds), nil
-	case "step":
+	case timingScopeStep:
 		job := findJobByName(jobs, jobName)
 		if job == nil {
 			return nil, nil

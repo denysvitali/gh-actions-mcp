@@ -41,6 +41,7 @@ func logsZip(t *testing.T, name, body string) []byte {
 type logsServer struct {
 	*httptest.Server
 
+	//nolint:forbidigo // guards paths (below); sole lock, no ordering to respect
 	mu    sync.Mutex
 	paths []string
 }

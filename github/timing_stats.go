@@ -125,7 +125,7 @@ func buildJobBreakdown(jobsByRun map[int64][]*Job, focusRunID int64) []*TimingBr
 	return limitTimingBreakdown(items, 10)
 }
 
-func buildStepBreakdown(jobsByRun map[int64][]*Job, focusRunID int64, jobName string) []*TimingBreakdownItem {
+func buildStepBreakdown(jobsByRun map[int64][]*Job, focusRunID int64, jobName string) []*TimingBreakdownItem { //nolint:gocognit // Baseline and focus traversal intentionally mirror each other.
 	focusJobs := jobsByRun[focusRunID]
 	baseline := make(map[stepBreakdownKey][]float64)
 	normalizedJobName := normalizeTimingName(jobName)

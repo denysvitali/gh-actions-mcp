@@ -66,7 +66,7 @@ func NewRetryTransport(base http.RoundTripper, maxRetries int) *RetryTransport {
 	return transport
 }
 
-func (t *RetryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (t *RetryTransport) RoundTrip(request *http.Request) (*http.Response, error) { //nolint:gocognit // Retry state is deliberately visible in one bounded loop.
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		return t.base.RoundTrip(request)
 	}

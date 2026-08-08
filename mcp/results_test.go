@@ -299,3 +299,29 @@ func TestGetLimitAndLogLines(t *testing.T) {
 	assert.Equal(t, 5, DefaultListLimit)
 	assert.Equal(t, 50, DefaultLogLines)
 }
+
+func TestFormatWorkflowStatusSummary(t *testing.T) {
+	status := &github.CombinedCheckStatus{
+		State:      "failure",
+		TotalCount: 3,
+		ByConclusion: map[string]int{
+			"failure":     2,
+			"in_progress": 1,
+		},
+		CheckRuns: []*github.CheckRun{
+			{ID: 10, Name: "Build", Status: "completed", Conclusion: "failure"},
+			{ID: 11, Name: "Lint", Status: "in_progress", Conclusion: ""},
+		},
+	}
+
+	out := formatWorkflowStatusSummary("main", status, "latest")
+	assert.Contains(t, out, "Workflow Status for main")
+	assert.Contains(t, out, "Overall: failure")
+	assert.Contains(t, out, "Workflows: 3")
+	assert.Contains(t, out, "Filter Mode: latest")
+	assert.Contains(t, out, "By Conclusion:")
+	assert.Contains(t, out, "failure: 2")
+	assert.Contains(t, out, "in_progress: 1")
+	assert.Contains(t, out, "- Build: completed/failure (id: 10)")
+	assert.Contains(t, out, "- Lint: in_progress/- (id: 11)")
+}

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os/exec"
@@ -18,6 +19,7 @@ type gitConfigEntry struct {
 // (system, global, worktree and local files, following include directives).
 // dir may be empty to use the current working directory.
 func loadGitConfigEntries(dir string) ([]gitConfigEntry, error) {
+	//nolint:noctx // Configuration loading has no request context; Command is kept behavior-compatible here.
 	cmd := exec.Command("git", "config", "--includes", "--null", "--list")
 	if dir != "" {
 		cmd.Dir = dir
@@ -25,7 +27,8 @@ func loadGitConfigEntries(dir string) ([]gitConfigEntry, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		// Exit code 1 means "no entries", which is not an error for us.
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to read git config: %w", err)

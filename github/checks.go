@@ -36,6 +36,11 @@ type GetCheckRunsOptions struct {
 	Filter    string // Optional: "latest" (default) or "all"
 }
 
+// isLikelyCommitRef reports whether ref looks like a (possibly abbreviated) commit
+// SHA: 7 to 40 hex digits. Anything else is treated as a branch name. The
+// heuristic is deliberately loose — a 7-hex-character branch name would be
+// misclassified, which is why GetCheckRunsForRef still prefix-matches head SHAs
+// client-side rather than trusting it.
 func isLikelyCommitRef(ref string) bool {
 	if len(ref) < 7 || len(ref) > 40 {
 		return false
@@ -48,8 +53,56 @@ func isLikelyCommitRef(ref string) bool {
 	return true
 }
 
-// GetCheckRunsForRef retrieves status information for a ref using workflow runs.
-// It intentionally avoids the GitHub Checks API because many PATs cannot access it.
+// checkRunFilter is the resolved form of GetCheckRunsOptions plus the ref
+// classification, so the filtering pass needs no nil checks.
+type checkRunFilter struct {
+	ref         string
+	refIsCommit bool
+	name        string
+	status      string
+	// keepAll disables the "newest run per workflow name" deduplication.
+	keepAll bool
+}
+
+// newCheckRunFilter resolves opts (which may be nil) against ref.
+func newCheckRunFilter(ref string, opts *GetCheckRunsOptions) checkRunFilter {
+	filter := checkRunFilter{ref: ref, refIsCommit: isLikelyCommitRef(ref)}
+	if opts != nil {
+		filter.name = opts.CheckName
+		filter.status = opts.Status
+		filter.keepAll = opts.Filter == "all"
+	}
+	return filter
+}
+
+// matches reports whether a workflow run belongs in the result. A commit-like ref
+// is matched case-insensitively as a prefix of the run's head SHA, which is what
+// makes abbreviated SHAs work.
+func (f checkRunFilter) matches(run *github.WorkflowRun) bool {
+	if run == nil {
+		return false
+	}
+	if f.refIsCommit && !strings.HasPrefix(strings.ToLower(run.GetHeadSHA()), strings.ToLower(f.ref)) {
+		return false
+	}
+	if f.name != "" && run.GetName() != f.name {
+		return false
+	}
+	if f.status != "" && run.GetStatus() != f.status {
+		return false
+	}
+	return true
+}
+
+// GetCheckRunsForRef reports the combined CI status of a ref, synthesised from
+// workflow runs rather than the Checks API — many fine-grained PATs cannot read
+// check runs, but every token that can list runs can produce this.
+//
+// An empty ref resolves to the local HEAD commit. A ref that looks like a SHA is
+// prefix-matched against run head SHAs client-side; anything else is passed to
+// GitHub as a branch filter. By default only the newest run per workflow name is
+// kept; opts.Filter == "all" keeps every matching run. The returned CheckRuns are
+// in GitHub's page order for "all" and in unspecified (map) order otherwise.
 func (c *Client) GetCheckRunsForRef(ctx context.Context, ref string, opts *GetCheckRunsOptions) (*CombinedCheckStatus, error) {
 	if ref == "" {
 		commit, err := GetLastCommit()
@@ -59,12 +112,11 @@ func (c *Client) GetCheckRunsForRef(ctx context.Context, ref string, opts *GetCh
 		ref = commit.SHA
 	}
 
+	filter := newCheckRunFilter(ref, opts)
 	runOpts := &github.ListWorkflowRunsOptions{
 		ListOptions: github.ListOptions{PerPage: c.perPageLimit},
 	}
-
-	refIsCommit := isLikelyCommitRef(ref)
-	if !refIsCommit {
+	if !filter.refIsCommit {
 		runOpts.Branch = ref
 	}
 
@@ -73,65 +125,49 @@ func (c *Client) GetCheckRunsForRef(ctx context.Context, ref string, opts *GetCh
 		return nil, fmt.Errorf("failed to list workflow runs for ref %s: %w", ref, err)
 	}
 
-	filterByName := ""
-	filterByStatus := ""
-	filterMode := "latest"
-	if opts != nil {
-		filterByName = opts.CheckName
-		filterByStatus = opts.Status
-		if opts.Filter == "all" {
-			filterMode = "all"
-		}
-	}
-
-	filtered := make([]*github.WorkflowRun, 0)
+	matched := make([]*github.WorkflowRun, 0, len(runs.WorkflowRuns))
 	for _, run := range runs.WorkflowRuns {
-		if run == nil {
-			continue
+		if filter.matches(run) {
+			matched = append(matched, run)
 		}
-		if refIsCommit {
-			headSHA := strings.ToLower(run.GetHeadSHA())
-			if !strings.HasPrefix(headSHA, strings.ToLower(ref)) {
-				continue
-			}
-		}
-		if filterByName != "" && run.GetName() != filterByName {
-			continue
-		}
-		if filterByStatus != "" && run.GetStatus() != filterByStatus {
-			continue
-		}
-		filtered = append(filtered, run)
+	}
+	if !filter.keepAll {
+		matched = latestRunPerName(matched)
 	}
 
-	if filterMode != "all" {
-		latestByName := make(map[string]*github.WorkflowRun)
-		for _, run := range filtered {
-			name := run.GetName()
-			if existing, ok := latestByName[name]; !ok {
-				latestByName[name] = run
-			} else {
-				if run.GetRunNumber() > existing.GetRunNumber() {
-					latestByName[name] = run
-				}
-			}
-		}
-		deduped := make([]*github.WorkflowRun, 0, len(latestByName))
-		for _, run := range latestByName {
-			deduped = append(deduped, run)
-		}
-		filtered = deduped
-	}
+	return c.combinedStatus(ref, matched), nil
+}
 
+// latestRunPerName keeps, for each workflow name, the run with the highest run
+// number. Order is not preserved: the result comes out of a map.
+func latestRunPerName(runs []*github.WorkflowRun) []*github.WorkflowRun {
+	latest := make(map[string]*github.WorkflowRun, len(runs))
+	for _, run := range runs {
+		name := run.GetName()
+		if existing, ok := latest[name]; !ok || run.GetRunNumber() > existing.GetRunNumber() {
+			latest[name] = run
+		}
+	}
+	deduped := make([]*github.WorkflowRun, 0, len(latest))
+	for _, run := range latest {
+		deduped = append(deduped, run)
+	}
+	return deduped
+}
+
+// combinedStatus projects workflow runs onto the check-run shape and aggregates
+// them. A run's conclusion is counted when it has one; otherwise its
+// still-running status is counted instead, so pending work is visible in
+// ByConclusion.
+func (c *Client) combinedStatus(ref string, runs []*github.WorkflowRun) *CombinedCheckStatus {
 	result := &CombinedCheckStatus{
 		SHA:          ref,
-		CheckRuns:    make([]*CheckRun, 0),
+		CheckRuns:    make([]*CheckRun, 0, len(runs)),
 		ByConclusion: make(map[string]int),
 	}
 
-	// Convert workflow runs to check-like entries.
-	for _, run := range filtered {
-		checkRun := &CheckRun{
+	for _, run := range runs {
+		result.CheckRuns = append(result.CheckRuns, &CheckRun{
 			ID:          run.GetID(),
 			Name:        run.GetName(),
 			Status:      run.GetStatus(),
@@ -140,26 +176,25 @@ func (c *Client) GetCheckRunsForRef(ctx context.Context, ref string, opts *GetCh
 			CompletedAt: formatTime(run.UpdatedAt),
 			AppName:     "github-actions",
 			DetailsURL:  run.GetHTMLURL(),
-		}
-		result.CheckRuns = append(result.CheckRuns, checkRun)
+		})
 
-		// Count by conclusion
-		if run.GetConclusion() != "" {
+		switch {
+		case run.GetConclusion() != "":
 			result.ByConclusion[run.GetConclusion()]++
-		} else if run.GetStatus() != "completed" {
+		case run.GetStatus() != "completed":
 			result.ByConclusion[run.GetStatus()]++
 		}
 	}
 
 	result.TotalCount = len(result.CheckRuns)
-
-	// Determine overall state
 	result.State = c.determineOverallState(result.CheckRuns)
-
-	return result, nil
+	return result
 }
 
-// determineOverallState determines the overall check status from individual check runs
+// determineOverallState aggregates individual check runs into one state.
+// Precedence is pending > failure > success > neutral: any unfinished check makes
+// the whole ref pending, and a set of only skipped or cancelled checks is neutral.
+// An empty set is pending.
 func (c *Client) determineOverallState(checkRuns []*CheckRun) string {
 	if len(checkRuns) == 0 {
 		return "pending"
@@ -171,9 +206,10 @@ func (c *Client) determineOverallState(checkRuns []*CheckRun) string {
 
 	for _, cr := range checkRuns {
 		if cr.Status == "completed" {
-			if cr.Conclusion == "failure" || cr.Conclusion == "timed_out" {
+			switch cr.Conclusion {
+			case "failure", "timed_out":
 				hasFailure = true
-			} else if cr.Conclusion == "success" {
+			case "success":
 				hasSuccess = true
 			}
 		} else {

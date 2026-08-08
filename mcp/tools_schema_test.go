@@ -103,7 +103,8 @@ func TestRegisteredToolNames(t *testing.T) {
 }
 
 // TestGetRunElementEnumOrder pins the element enum of get_run. The enum order is
-// part of the wire contract and must match validRunElements.
+// part of the wire contract and must match runElements (run_elements.go), which
+// the schema derives it from.
 func TestGetRunElementEnumOrder(t *testing.T) {
 	want := []any{"info", "jobs", "logs", "log_files", "log_sections", "artifacts", "artifact_content"}
 

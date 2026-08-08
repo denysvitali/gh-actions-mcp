@@ -1,0 +1,122 @@
+# golangci-lint configuration for gh-actions-mcp.
+# Targets golangci-lint v2 (developed against 2.11.4).
+#
+# The thresholds here are the ones the refactor of 2026-07 was measured
+# against (see docs/refactor-audit.md): cognitive complexity 15, functions 60
+# lines, no copy-paste blocks over 100 tokens. They are deliberately strict so
+# that a regression shows up as a CI failure rather than as a slow drift.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # correctness
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - errorlint # %w / errors.As instead of type switches on errors
+    - nilerr # return nil after a non-nil err
+    - makezero # make([]T, n) then append
+    - bodyclose # http.Response.Body must be closed
+    - noctx # no context on an outgoing HTTP request
+    - contextcheck # do not create a fresh context below main
+    - containedctx # do not store a context in a struct
+    - copyloopvar
+    - unconvert
+    # style / structure
+    - revive
+    - gocritic
+    - forbidigo
+    - depguard
+    # complexity budget
+    - gocognit
+    - gocyclo
+    - funlen
+    - nestif
+    - dupl
+    # tests
+    - thelper # test helpers must call t.Helper()
+    - tparallel # t.Parallel misuse between parent and subtests
+    - paralleltest
+
+  settings:
+    gocognit:
+      min-complexity: 15
+    gocyclo:
+      min-complexity: 15
+    funlen:
+      lines: 60
+      statements: 40
+    dupl:
+      threshold: 100
+    nestif:
+      min-complexity: 4
+
+    forbidigo:
+      # Replaces the default fmt.Print* patterns: this is a CLI, printing to
+      # stdout is the point.
+      forbid:
+        - pattern: '^sync\.(Mutex|RWMutex)$'
+          msg: >-
+            Prefer goroutine ownership + channels (see docs/architecture.md).
+            If a lock is genuinely right, add //nolint:forbidigo with a
+            one-line comment naming the fields it guards and the lock ordering.
+      analyze-types: true
+
+    depguard:
+      rules:
+        all:
+          files:
+            - $all
+          deny:
+            - pkg: github.com/pkg/errors
+              desc: use the standard library errors package and %w
+            - pkg: io/ioutil
+              desc: deprecated since Go 1.16, use io and os
+
+    revive:
+      rules:
+        - name: unused-parameter
+          # cobra RunE handlers must accept (cmd, args) whether or not they use
+          # both, and the MCP SDK handler signature is likewise fixed.
+          disabled: true
+
+    gocritic:
+      disabled-checks:
+        # ifElseChain overlaps with staticcheck QF1003 and fires on chains that
+        # are not switchable (different subjects per branch).
+        - ifElseChain
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Table-driven tests and cobra/MCP fixtures repeat structure by design;
+      # dupl/nestif report fixture shape rather than production complexity.
+      # Test-only requests and subprocesses deliberately use local helpers
+      # without request contexts, and several suites serialize access to
+      # package globals or httptest servers. tparallel remains enabled to catch
+      # unsafe uses of t.Parallel; paralleltest's require-every-test policy does
+      # not fit those suites.
+      - path: _test\.go
+        linters:
+          - dupl
+          - funlen
+          - gocognit
+          - nestif
+          - noctx
+          - forbidigo
+          - paralleltest
+      # cmd's tests mutate the package-level flag variables that cobra binds
+      # to, and config's tests use t.Setenv; both are incompatible with
+      # t.Parallel(). See the comment at the top of cmd/logs_test.go.
+      - path: ^(cmd|config)/.*_test\.go$
+        linters:
+          - paralleltest
+
+formatters:
+  enable:
+    - gofumpt

@@ -33,7 +33,7 @@ func FindRemoteByName(remoteName string) (string, error) {
 }
 
 // GetDefaultBranch returns the default branch of the remote repository
-func GetDefaultBranch(remoteName string) (string, error) {
+func GetDefaultBranch(remoteName string) (string, error) { //nolint:gocognit,nestif // Refspec parsing and fallbacks are kept in one small operation.
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("failed to get working directory: %w", err)
@@ -60,7 +60,7 @@ func GetDefaultBranch(remoteName string) (string, error) {
 		refSpec := fetch.String()
 		// Common pattern: +refs/heads/main:refs/remotes/origin/main
 		// or +refs/heads/master:refs/remotes/origin/master
-		if strings.Contains(refSpec, "refs/heads/") {
+		if strings.Contains(refSpec, "refs/heads/") { //nolint:nestif // Refspec parsing is deliberately defensive.
 			parts := strings.Split(refSpec, ":")
 			if len(parts) > 0 {
 				src := parts[0]

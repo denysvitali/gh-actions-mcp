@@ -12,7 +12,7 @@ import (
 // ParseGitURL parses a git URL and extracts owner/repo
 // Supports SSH, HTTPS, git://, and bare formats. It also reverses git
 // url.<base>.insteadOf rewrites (e.g. gh-proxy) before parsing.
-func ParseGitURL(remoteURL string) (string, string, error) {
+func ParseGitURL(remoteURL string) (string, string, error) { //nolint:funlen,gocognit,gocyclo // Supported URL syntaxes are intentionally handled together.
 	// Undo git insteadOf rewrites such as gh-proxy so that a proxied remote
 	// URL is translated back to its original github.com form.
 	if reversed, revErr := ReverseInsteadOf(remoteURL); revErr == nil {

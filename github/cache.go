@@ -12,7 +12,7 @@ import (
 // never serves stale data: an entry is used only after GitHub replies 304.
 type ETagCacheTransport struct {
 	base                        http.RoundTripper
-	mu                          sync.Mutex
+	mu                          sync.Mutex //nolint:forbidigo // Guards entries only; it is a leaf lock with no lock ordering.
 	entries                     map[string]etagCacheEntry
 	hits, revalidations, stores atomic.Int64
 }
