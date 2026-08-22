@@ -908,3 +908,47 @@ func TestGetWorkflowJobLogs_Errors(t *testing.T) {
 		assert.Equal(t, http.StatusGone, httpErr.StatusCode)
 	})
 }
+
+func TestStripANSI(t *testing.T) {
+	t.Parallel()
+	raw := "\x1b[36;1mecho hello\x1b[0m"
+	assert.Equal(t, "echo hello", stripANSI(raw))
+	assert.Equal(t, "plain", stripANSI("plain"))
+}
+
+func TestDropCombinedJobLogs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drops combined file when per-step files exist", func(t *testing.T) {
+		t.Parallel()
+		files := []logFile{
+			{name: "0_Flash & Soak Test (wifi).txt", data: "combined"},
+			{name: "Flash & Soak Test (wifi)/13_Flash and soak test.txt", data: "step"},
+			{name: "1_Wait.txt", data: "wait-combined"},
+		}
+		got := dropCombinedJobLogs(files)
+		names := make([]string, len(got))
+		for i, f := range got {
+			names[i] = f.name
+		}
+		assert.Equal(t, []string{
+			"Flash & Soak Test (wifi)/13_Flash and soak test.txt",
+			"1_Wait.txt",
+		}, names)
+	})
+
+	t.Run("keeps combined file when there are no per-step files", func(t *testing.T) {
+		t.Parallel()
+		files := []logFile{{name: "0_Build.txt", data: "only"}}
+		got := dropCombinedJobLogs(files)
+		require.Len(t, got, 1)
+		assert.Equal(t, "0_Build.txt", got[0].name)
+	})
+}
+
+func TestCombinedJobName(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "Flash & Soak Test (wifi)", combinedJobName("0_Flash & Soak Test (wifi).txt"))
+	assert.Equal(t, "", combinedJobName("Flash & Soak Test (wifi)/13_step.txt"))
+	assert.Equal(t, "", combinedJobName("system.txt"))
+}

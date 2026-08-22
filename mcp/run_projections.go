@@ -57,3 +57,33 @@ func fullRun(run *github.WorkflowRun) *github.WorkflowRunFull {
 		DurationSeconds: run.DurationSeconds,
 	}
 }
+
+// projectJobs is the jobs counterpart of formatRuns. compact (the default)
+// drops skipped and successful steps so a 37-step HIL job does not dump
+// every Set up / Complete job line; full keeps the complete step list.
+func projectJobs(jobs []*github.Job, format string) []*github.Job {
+	if format == "full" {
+		return jobs
+	}
+	out := make([]*github.Job, len(jobs))
+	for i, job := range jobs {
+		copyJob := *job
+		copyJob.Steps = compactSteps(job.Steps)
+		out[i] = &copyJob
+	}
+	return out
+}
+
+func compactSteps(steps []*github.Step) []*github.Step {
+	if len(steps) == 0 {
+		return steps
+	}
+	kept := make([]*github.Step, 0, len(steps))
+	for _, step := range steps {
+		if step.Conclusion == "success" || step.Conclusion == "skipped" {
+			continue
+		}
+		kept = append(kept, step)
+	}
+	return kept
+}

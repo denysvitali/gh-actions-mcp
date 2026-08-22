@@ -119,7 +119,7 @@ func (s *MCPServer) runElementJobs(ctx context.Context, req runElementRequest) (
 	}
 	return resultForFormat(struct {
 		Jobs []*github.Job `json:"jobs"`
-	}{Jobs: jobs}, req.input.Format), nil, nil
+	}{Jobs: projectJobs(jobs, req.input.Format)}, req.input.Format), nil, nil
 }
 
 // runElementLogFiles lists the log files inside the run archive, optionally

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
@@ -25,17 +26,19 @@ import (
 // change the classification of existing messages.
 func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string {
 	errStr := ""
+	display := err
 	if err != nil {
-		errStr = strings.ToLower(err.Error())
+		display = redactedError(err)
+		errStr = strings.ToLower(display.Error())
 	}
 	status := httpStatusOf(err)
 
 	if strings.Contains(errStr, "resource not accessible by personal access token") {
-		return fmt.Sprintf("%s: %v\nGitHub rejected the token for this endpoint.\nFor fine-grained PATs, grant repository access plus:\n- Actions: Read (runs/jobs/logs/artifacts)\nFor classic PATs on private repos, include the 'repo' scope.", msg, err)
+		return fmt.Sprintf("%s: %v\nGitHub rejected the token for this endpoint.\nFor fine-grained PATs, grant repository access plus:\n- Actions: Read (runs/jobs/logs/artifacts)\nFor classic PATs on private repos, include the 'repo' scope.", msg, display)
 	}
 
 	if status == http.StatusUnauthorized || containsAny(errStr, "401", "unauthorized", "bad credentials", "log access unauthorized") {
-		return fmt.Sprintf("%s: %v\nGitHub rejected authentication for %s.\nSet a valid GITHUB_TOKEN and ensure it can read Actions data in this repository.", msg, err, repo)
+		return fmt.Sprintf("%s: %v\nGitHub rejected authentication for %s.\nSet a valid GITHUB_TOKEN and ensure it can read Actions data in this repository.", msg, display, repo)
 	}
 
 	var rateLimitErr *ghapi.RateLimitError
@@ -44,17 +47,17 @@ func (s *MCPServer) formatAuthErrorWithRepo(err error, msg, repo string) string 
 	}
 
 	if status == http.StatusForbidden || containsAny(errStr, "403", "insufficient", "forbidden") {
-		return fmt.Sprintf("%s: %v\nGitHub accepted authentication but denied authorization for %s.\nThe token likely lacks required repository permissions for this operation.", msg, err, repo)
+		return fmt.Sprintf("%s: %v\nGitHub accepted authentication but denied authorization for %s.\nThe token likely lacks required repository permissions for this operation.", msg, display, repo)
 	}
 
 	if status == http.StatusNotFound || strings.Contains(errStr, "404") {
-		return fmt.Sprintf("%s: %v\nGitHub returned 404 for %s.\nThis usually means the run/ref/artifact is not in this repository, or the token cannot see a private repository.", msg, err, repo)
+		return fmt.Sprintf("%s: %v\nGitHub returned 404 for %s.\nThis usually means the run/ref/artifact is not in this repository, or the token cannot see a private repository.", msg, display, repo)
 	}
 
 	if config.IsAuthenticationError(err) {
-		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set (or run 'gh auth login' on macOS) and has access to %s", err, repo)
+		return fmt.Sprintf("authentication failed: %v\nMake sure GITHUB_TOKEN is set (or run 'gh auth login' on macOS) and has access to %s", display, repo)
 	}
-	return fmt.Sprintf("%s: %v", msg, err)
+	return fmt.Sprintf("%s: %v", msg, display)
 }
 
 // formatAuthError formats an error message with authentication context, naming
@@ -90,4 +93,24 @@ func containsAny(haystack string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+// redactedError returns err with in-cluster / internal hostnames stripped from
+// the message so tool output does not leak cluster DNS (e.g. gh-proxy.svc).
+func redactedError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := redactInternalURLs(err.Error())
+	if msg == err.Error() {
+		return err
+	}
+	return errors.New(msg)
+}
+
+// internalURLPattern matches http(s) URLs whose host is cluster-local.
+var internalURLPattern = regexp.MustCompile(`(?i)https?://[^\s]+\.(?:svc\.cluster\.local|cluster\.local|internal)(?::\d+)?[^\s]*`)
+
+func redactInternalURLs(s string) string {
+	return internalURLPattern.ReplaceAllString(s, "<internal>")
 }

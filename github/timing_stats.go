@@ -90,7 +90,7 @@ type stepBreakdownKey struct {
 	StepName string
 }
 
-func buildJobBreakdown(jobsByRun map[int64][]*Job, focusRunID int64) []*TimingBreakdownItem {
+func buildJobBreakdown(jobsByRun map[int64][]*Job, focusRunID int64) ([]*TimingBreakdownItem, int) {
 	focusJobs := jobsByRun[focusRunID]
 	baseline := make(map[string][]float64)
 	for runID, jobs := range jobsByRun {
@@ -125,7 +125,7 @@ func buildJobBreakdown(jobsByRun map[int64][]*Job, focusRunID int64) []*TimingBr
 	return limitTimingBreakdown(items, 10)
 }
 
-func buildStepBreakdown(jobsByRun map[int64][]*Job, focusRunID int64, jobName string) []*TimingBreakdownItem { //nolint:gocognit // Baseline and focus traversal intentionally mirror each other.
+func buildStepBreakdown(jobsByRun map[int64][]*Job, focusRunID int64, jobName string) ([]*TimingBreakdownItem, int) { //nolint:gocognit // Baseline and focus traversal intentionally mirror each other.
 	focusJobs := jobsByRun[focusRunID]
 	baseline := make(map[stepBreakdownKey][]float64)
 	normalizedJobName := normalizeTimingName(jobName)
@@ -196,9 +196,9 @@ func sortTimingBreakdown(items []*TimingBreakdownItem) {
 	})
 }
 
-func limitTimingBreakdown(items []*TimingBreakdownItem, limit int) []*TimingBreakdownItem {
+func limitTimingBreakdown(items []*TimingBreakdownItem, limit int) ([]*TimingBreakdownItem, int) {
 	if len(items) <= limit {
-		return items
+		return items, 0
 	}
-	return items[:limit]
+	return items[:limit], len(items) - limit
 }

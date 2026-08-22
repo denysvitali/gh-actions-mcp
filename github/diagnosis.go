@@ -48,7 +48,12 @@ type FlakinessInfo struct {
 	Verdict          string `json:"verdict"` // "likely_flake", "likely_regression", "first_failure", "unknown"
 }
 
-// errorPatterns are regex patterns that identify error lines in CI logs
+// errorPatterns are regex patterns that identify error lines in CI logs.
+// They are the fallback when a job log contains no GitHub Actions
+// ##[error] annotations. The first pattern is deliberately narrower than
+// "contains the word error": matching every echo "::error::..." line in a
+// bash -x workflow dump is how diagnose_failure used to drown in script
+// source (see gps-tracker HIL Test).
 var errorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^.*error[:\[].*`),
 	regexp.MustCompile(`(?i)^.*FAIL[:\s].*`),
@@ -63,6 +68,17 @@ var errorPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)process completed with exit code [1-9]`),
 	regexp.MustCompile(`##\[error\]`), // GitHub Actions error annotations
 }
+
+// ghaErrorAnnotation matches a GitHub Actions error annotation after any
+// timestamp prefix has been stripped. Used to prefer real runner-emitted
+// errors over script-source lines that merely contain the word "error".
+var ghaErrorAnnotation = regexp.MustCompile(`##\[error\]`)
+
+// scriptSourceLine matches a bash -x / Actions debug dump of a script
+// line. After ANSI is stripped on ingest these look like
+// `echo "::error::foo"` or `echo "ERROR: foo"` — the workflow file, not
+// the failure.
+var scriptSourceLine = regexp.MustCompile(`(?i)^(?:\+\s*)?(?:echo|printf)\b`)
 
 // DiagnoseFailure performs a comprehensive diagnosis of a failed workflow run.
 // It fetches the run, identifies failed jobs and steps, extracts error lines from
@@ -200,7 +216,10 @@ func (c *Client) getCheckRunAnnotationErrors(ctx context.Context, jobID int64, m
 	return result
 }
 
-// extractErrorLines fetches logs for a job and extracts lines matching error patterns
+// extractErrorLines fetches logs for a job and extracts lines matching error patterns.
+// ##[error] annotations win over the regex fallback: they are what the runner
+// actually emitted. Script-source lines (ANSI-colored bash -x dumps of
+// `echo "::error::..."`) are skipped in both passes.
 func (c *Client) extractErrorLines(ctx context.Context, runID, jobID int64, maxLines int) []string { //nolint:gocognit,nestif // Fallback and line normalization form one extraction path.
 	logs, err := c.jobLogs(ctx, jobID, LogViewOptions{NoHeaders: true})
 	if err != nil { //nolint:nestif // The archive fallback is intentionally bounded within the primary failure path.
@@ -217,39 +236,75 @@ func (c *Client) extractErrorLines(ctx context.Context, runID, jobID int64, maxL
 		}
 	}
 
+	return collectErrorLines(logs, maxLines)
+}
+
+// collectErrorLines is the pure extractor behind extractErrorLines so the
+// preference for ##[error] annotations and the skip of script-source lines
+// can be unit-tested without standing up a GitHub client.
+func collectErrorLines(logs string, maxLines int) []string {
+	if maxLines <= 0 {
+		maxLines = 200
+	}
 	lines := strings.Split(logs, "\n")
+	annotations := collectMatchingErrorLines(lines, maxLines, true)
+	if len(annotations) > 0 {
+		return annotations
+	}
+	return collectMatchingErrorLines(lines, maxLines, false)
+}
+
+func collectMatchingErrorLines(lines []string, maxLines int, annotationsOnly bool) []string {
 	var errorLines []string
 	seen := make(map[string]bool)
-
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		cleaned := normalizeErrorLine(line)
+		if cleaned == "" || seen[cleaned] {
 			continue
 		}
-
-		for _, pattern := range errorPatterns {
-			if pattern.MatchString(trimmed) { //nolint:nestif // Match collection and truncation are one bounded operation.
-				// Remove timestamps that GitHub Actions prepends (e.g., "2024-01-15T10:30:00.1234567Z ")
-				cleaned := trimmed
-				if len(cleaned) > 30 && cleaned[4] == '-' && cleaned[10] == 'T' {
-					if spaceIdx := strings.Index(cleaned, " "); spaceIdx > 0 && spaceIdx < 35 {
-						cleaned = cleaned[spaceIdx+1:]
-					}
-				}
-				if !seen[cleaned] {
-					seen[cleaned] = true
-					errorLines = append(errorLines, cleaned)
-				}
-				break
-			}
+		if !isErrorLine(cleaned, annotationsOnly) {
+			continue
 		}
-
+		seen[cleaned] = true
+		errorLines = append(errorLines, cleaned)
 		if len(errorLines) >= maxLines {
 			break
 		}
 	}
-
 	return errorLines
+}
+
+// normalizeErrorLine strips ANSI, GitHub timestamps, and surrounding
+// whitespace. Empty after stripping means "ignore this line".
+func normalizeErrorLine(line string) string {
+	cleaned := strings.TrimSpace(stripANSI(line))
+	if cleaned == "" {
+		return ""
+	}
+	if len(cleaned) > 30 && cleaned[4] == '-' && cleaned[10] == 'T' {
+		if spaceIdx := strings.Index(cleaned, " "); spaceIdx > 0 && spaceIdx < 35 {
+			cleaned = strings.TrimSpace(cleaned[spaceIdx+1:])
+		}
+	}
+	if scriptSourceLine.MatchString(cleaned) {
+		return ""
+	}
+	return cleaned
+}
+
+func isErrorLine(line string, annotationsOnly bool) bool {
+	if annotationsOnly {
+		return ghaErrorAnnotation.MatchString(line)
+	}
+	if scriptSourceLine.MatchString(line) {
+		return false
+	}
+	for _, pattern := range errorPatterns {
+		if pattern.MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkFlakiness compares the current failure against recent runs of the same workflow

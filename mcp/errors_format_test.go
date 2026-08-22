@@ -221,3 +221,24 @@ func TestFormatAuthError_PermissionHints(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactInternalURLs(t *testing.T) {
+	t.Parallel()
+
+	in := "GET http://gh-proxy.gh-proxy.svc.cluster.local/api/repos/denysvitali/not-a-real-repo-xyz/actions/runs/1/jobs?per_page=50: 404 Not Found []"
+	out := redactInternalURLs(in)
+	assert.Equal(t, "GET <internal> 404 Not Found []", out)
+	assert.NotContains(t, out, "gh-proxy")
+	assert.Equal(t, "plain", redactInternalURLs("plain"))
+}
+
+func TestFormatAuthErrorWithRepo_RedactsClusterURLs(t *testing.T) {
+	t.Parallel()
+
+	server := &MCPServer{config: &config.Config{RepoOwner: "o", RepoName: "r"}}
+	err := errors.New("GET http://gh-proxy.gh-proxy.svc.cluster.local/api/repos/o/r/actions/runs/1/jobs: 404 Not Found []")
+	out := server.formatAuthErrorWithRepo(err, "failed to get jobs for run 1", "o/r")
+	assert.Contains(t, out, "GitHub returned 404 for o/r.")
+	assert.NotContains(t, out, "gh-proxy")
+	assert.Contains(t, out, "<internal>")
+}

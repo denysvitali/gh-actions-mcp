@@ -270,17 +270,16 @@ func TestDiagnoseFailure_Integration(t *testing.T) {
 	require.Len(t, diagnosis.FailedJobs[0].FailedSteps, 1)
 	assert.Equal(t, "Build", diagnosis.FailedJobs[0].FailedSteps[0].Name)
 
-	// Should have extracted error lines (timestamps stripped)
+	// ##[error] annotations win over generic "error:" lines.
 	require.GreaterOrEqual(t, len(diagnosis.FailedJobs[0].ErrorLines), 1)
-	foundModuleError := false
+	foundAnnotation := false
 	for _, line := range diagnosis.FailedJobs[0].ErrorLines {
-		if strings.Contains(line, "cannot find module") {
-			foundModuleError = true
+		if strings.Contains(line, "##[error]") {
+			foundAnnotation = true
 		}
-		// Timestamp should be stripped
 		assert.NotContains(t, line, "2024-01-15T10:30")
 	}
-	assert.True(t, foundModuleError, "should have found 'cannot find module' error")
+	assert.True(t, foundAnnotation, "should have extracted the ##[error] annotation")
 
 	// Flakiness check
 	require.NotNil(t, diagnosis.Flakiness)
@@ -384,8 +383,6 @@ func TestExtractErrorLines(t *testing.T) {
 		lines := client.extractErrorLines(context.Background(), 0, 10, 10)
 		assert.Equal(t, []string{
 			"##[error]first failure",
-			"--- FAIL: TestSomething",
-			"panic: runtime error",
 		}, lines)
 
 		capped := client.extractErrorLines(context.Background(), 0, 10, 1)
@@ -623,5 +620,41 @@ func TestGetCheckRunAnnotationErrors_NoAnnotations(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/check-runs/10/annotations", statusHandler(http.StatusForbidden))
 		client := newMuxClient(t, mux)
 		assert.Empty(t, client.getCheckRunAnnotationErrors(context.Background(), 10, 50))
+	})
+}
+
+func TestCollectErrorLines_PrefersAnnotationsAndSkipsScriptSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("##[error] wins over echo script source and generic error: lines", func(t *testing.T) {
+		t.Parallel()
+		esc := "\x1b[36;1m"
+		reset := "\x1b[0m"
+		logs := strings.Join([]string{
+			esc + `echo "::error::Failed to download firmware"` + reset,
+			esc + `echo "ERROR: probe-rs binary not found"` + reset,
+			"2026-08-22T07:49:56.2121805Z ##[error]Persistent no-signal during HIL soak",
+			"2026-08-22T07:49:58.3411498Z ##[error]Process completed with exit code 1.",
+			"error: cannot find module",
+		}, "\n")
+		got := collectErrorLines(logs, 50)
+		assert.Equal(t, []string{
+			"##[error]Persistent no-signal during HIL soak",
+			"##[error]Process completed with exit code 1.",
+		}, got)
+	})
+
+	t.Run("without ##[error], generic matches still work and echo lines are skipped", func(t *testing.T) {
+		t.Parallel()
+		logs := strings.Join([]string{
+			`echo "ERROR: probe not accessible"`,
+			"error: cannot find module",
+			"--- FAIL: TestFoo",
+		}, "\n")
+		got := collectErrorLines(logs, 50)
+		assert.Equal(t, []string{
+			"error: cannot find module",
+			"--- FAIL: TestFoo",
+		}, got)
 	})
 }

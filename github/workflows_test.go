@@ -97,7 +97,10 @@ func TestResolveWorkflowID(t *testing.T) {
 		},
 		{name: "name resolves", selector: "Release", wantID: 51, wantName: "Release"},
 		{name: "path resolves", selector: ".github/workflows/ci.yml", wantID: 50, wantName: "CI"},
+		{name: "basename resolves", selector: "ci.yml", wantID: 50, wantName: "CI"},
+		{name: "basename is case-insensitive", selector: "CI.YML", wantID: 50, wantName: "CI"},
 		{name: "unknown name is an error", selector: "Nope", wantErrMsg: "workflow Nope not found"},
+		{name: "unknown name lists known workflows", selector: "Nope", wantErrMsg: "known workflows: CI (ci.yml), Release (release.yml)"},
 		{name: "empty selector is an error", selector: "", wantErrMsg: "workflow  not found"},
 	}
 

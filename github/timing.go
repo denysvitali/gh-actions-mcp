@@ -59,18 +59,20 @@ type TimingBreakdownItem struct {
 
 // TimingAnalysis is the full result of comparing workflow/job/step timings.
 type TimingAnalysis struct {
-	Scope         string                 `json:"scope"`
-	WorkflowID    int64                  `json:"workflow_id"`
-	WorkflowName  string                 `json:"workflow_name"`
-	Branch        string                 `json:"branch,omitempty"`
-	JobName       string                 `json:"job_name,omitempty"`
-	StepName      string                 `json:"step_name,omitempty"`
-	SampleCount   int                    `json:"sample_count"`
-	Statistics    *TimingStats           `json:"statistics"`
-	Focus         *TimingComparison      `json:"focus"`
-	RecentSamples []*TimingSample        `json:"recent_samples"`
-	JobBreakdown  []*TimingBreakdownItem `json:"job_breakdown,omitempty"`
-	StepBreakdown []*TimingBreakdownItem `json:"step_breakdown,omitempty"`
+	Scope                string                 `json:"scope"`
+	WorkflowID           int64                  `json:"workflow_id"`
+	WorkflowName         string                 `json:"workflow_name"`
+	Branch               string                 `json:"branch,omitempty"`
+	JobName              string                 `json:"job_name,omitempty"`
+	StepName             string                 `json:"step_name,omitempty"`
+	SampleCount          int                    `json:"sample_count"`
+	Statistics           *TimingStats           `json:"statistics"`
+	Focus                *TimingComparison      `json:"focus"`
+	RecentSamples        []*TimingSample        `json:"recent_samples"`
+	JobBreakdown         []*TimingBreakdownItem `json:"job_breakdown,omitempty"`
+	StepBreakdown        []*TimingBreakdownItem `json:"step_breakdown,omitempty"`
+	JobBreakdownOmitted  int                    `json:"job_breakdown_omitted,omitempty"`
+	StepBreakdownOmitted int                    `json:"step_breakdown_omitted,omitempty"`
 }
 
 // timingScope names the granularity a TimingAnalysis was computed at.
@@ -297,10 +299,10 @@ func focusComparison(samples []*TimingSample, focusIndex int) *TimingComparison 
 func addTimingBreakdowns(analysis *TimingAnalysis, scope string, jobsByRun map[int64][]*Job, focusRunID int64, jobName string) {
 	switch scope {
 	case timingScopeWorkflow:
-		analysis.JobBreakdown = buildJobBreakdown(jobsByRun, focusRunID)
-		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRunID, jobName)
+		analysis.JobBreakdown, analysis.JobBreakdownOmitted = buildJobBreakdown(jobsByRun, focusRunID)
+		analysis.StepBreakdown, analysis.StepBreakdownOmitted = buildStepBreakdown(jobsByRun, focusRunID, jobName)
 	case timingScopeJob:
-		analysis.StepBreakdown = buildStepBreakdown(jobsByRun, focusRunID, jobName)
+		analysis.StepBreakdown, analysis.StepBreakdownOmitted = buildStepBreakdown(jobsByRun, focusRunID, jobName)
 	}
 }
 

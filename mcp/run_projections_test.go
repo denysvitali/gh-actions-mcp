@@ -98,3 +98,27 @@ func TestGetRunInfoProjectionsMatchListRuns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(fullFromList), string(fullDirect))
 }
+
+func TestProjectJobsCompactDropsSuccessfulAndSkippedSteps(t *testing.T) {
+	t.Parallel()
+
+	jobs := []*github.Job{{
+		ID: 1, Name: "Flash & Soak Test (wifi)", Conclusion: "failure",
+		Steps: []*github.Step{
+			{Name: "Checkout", Number: 2, Conclusion: "success"},
+			{Name: "Flash and soak test", Number: 13, Conclusion: "failure"},
+			{Name: "OTA", Number: 25, Conclusion: "skipped"},
+			{Name: "Validate", Number: 17, Conclusion: "failure"},
+		},
+	}}
+
+	compact := projectJobs(jobs, "compact")
+	require.Len(t, compact, 1)
+	require.Len(t, compact[0].Steps, 2)
+	assert.Equal(t, "Flash and soak test", compact[0].Steps[0].Name)
+	assert.Equal(t, "Validate", compact[0].Steps[1].Name)
+	require.Len(t, jobs[0].Steps, 4, "projectJobs must not mutate the input")
+
+	full := projectJobs(jobs, "full")
+	require.Len(t, full[0].Steps, 4)
+}

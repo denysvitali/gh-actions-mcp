@@ -138,7 +138,8 @@ func TestBuildJobBreakdown(t *testing.T) {
 		1: {{Name: "BUILD", DurationSeconds: 200}}, // name matching is case-insensitive
 	}
 
-	items := buildJobBreakdown(jobsByRun, 3)
+	items, omitted := buildJobBreakdown(jobsByRun, 3)
+	assert.Zero(t, omitted)
 	require.Len(t, items, 2, "only focus-run jobs with a positive duration appear")
 
 	assert.Equal(t, "build", items[0].JobName, "the largest positive delta sorts first")
@@ -156,7 +157,8 @@ func TestBuildJobBreakdown_NoBaseline(t *testing.T) {
 
 	// With only the focus run present there is no baseline, so the average is 0
 	// and the percentage delta collapses to 0 rather than dividing by zero.
-	items := buildJobBreakdown(map[int64][]*Job{1: {{Name: "build", DurationSeconds: 100}}}, 1)
+	items, omitted := buildJobBreakdown(map[int64][]*Job{1: {{Name: "build", DurationSeconds: 100}}}, 1)
+	assert.Zero(t, omitted)
 	require.Len(t, items, 1)
 	assert.Zero(t, items[0].AverageDurationSeconds)
 	assert.InDelta(t, 100.0, items[0].DeltaFromAverageSeconds, 0.001)
@@ -187,7 +189,8 @@ func TestBuildStepBreakdown(t *testing.T) {
 	t.Run("no job filter covers every job in the focus run", func(t *testing.T) {
 		t.Parallel()
 
-		items := buildStepBreakdown(jobsByRun, 2, "")
+		items, omitted := buildStepBreakdown(jobsByRun, 2, "")
+		assert.Zero(t, omitted)
 		require.Len(t, items, 3)
 		assert.Equal(t, "Compile", items[0].StepName)
 		assert.Equal(t, "build", items[0].JobName)
@@ -197,7 +200,8 @@ func TestBuildStepBreakdown(t *testing.T) {
 	t.Run("a job filter restricts both the focus and the baseline", func(t *testing.T) {
 		t.Parallel()
 
-		items := buildStepBreakdown(jobsByRun, 2, "LINT")
+		items, omitted := buildStepBreakdown(jobsByRun, 2, "LINT")
+		assert.Zero(t, omitted)
 		require.Len(t, items, 1, "the filter is case-insensitive")
 		assert.Equal(t, "Vet", items[0].StepName)
 		assert.InDelta(t, 40.0, items[0].AverageDurationSeconds, 0.001)
@@ -206,7 +210,9 @@ func TestBuildStepBreakdown(t *testing.T) {
 	t.Run("an unknown job filter yields no items", func(t *testing.T) {
 		t.Parallel()
 
-		assert.Empty(t, buildStepBreakdown(jobsByRun, 2, "nope"))
+		items, omitted := buildStepBreakdown(jobsByRun, 2, "nope")
+		assert.Empty(t, items)
+		assert.Zero(t, omitted)
 	})
 }
 
@@ -224,8 +230,12 @@ func TestSortAndLimitTimingBreakdown(t *testing.T) {
 	assert.Equal(t, "b", items[1].JobName, "equal deltas break the tie on duration")
 	assert.Equal(t, "a", items[2].JobName)
 
-	assert.Len(t, limitTimingBreakdown(items, 2), 2)
-	assert.Len(t, limitTimingBreakdown(items, 10), 3)
+	limited, omitted := limitTimingBreakdown(items, 2)
+	assert.Len(t, limited, 2)
+	assert.Equal(t, 1, omitted)
+	limited, omitted = limitTimingBreakdown(items, 10)
+	assert.Len(t, limited, 3)
+	assert.Zero(t, omitted)
 }
 
 func TestLimitTimingRuns(t *testing.T) {

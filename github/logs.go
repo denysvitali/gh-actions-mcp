@@ -9,9 +9,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
+
+// ansiCSI matches ECMA-48 SGR / CSI sequences used by GitHub Actions to
+// colour bash -x dumps (`\x1b[36;1m…\x1b[0m`). Stripped on ingest so every
+// consumer (search, diagnose, sections) sees the same plain text.
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 
 // logSizeThreshold is the archive size above which the download is spooled to a
 // temporary file instead of being buffered in memory. An unknown content length
@@ -161,11 +167,68 @@ func logFilesFromZip(zipReader *zip.Reader) []logFile {
 			continue
 		}
 
-		logFiles = append(logFiles, logFile{name: file.Name, data: string(content)})
+		logFiles = append(logFiles, logFile{name: file.Name, data: stripANSI(string(content))})
 	}
 
 	sortLogFiles(logFiles)
-	return logFiles
+	return dropCombinedJobLogs(logFiles)
+}
+
+// stripANSI removes CSI/SGR sequences. Safe on text that has none.
+func stripANSI(s string) string {
+	if !strings.ContainsRune(s, '\x1b') {
+		return s
+	}
+	return ansiCSI.ReplaceAllString(s, "")
+}
+
+// dropCombinedJobLogs removes the run-archive's combined `N_Job Name.txt`
+// files when per-step files for that job already exist. GitHub ships both
+// and searching the archive otherwise returns every hit twice.
+func dropCombinedJobLogs(files []logFile) []logFile {
+	hasPerStep := make(map[string]bool, len(files))
+	for _, lf := range files {
+		job, _, ok := strings.Cut(lf.name, "/")
+		if !ok || job == "" {
+			continue
+		}
+		hasPerStep[job] = true
+	}
+	if len(hasPerStep) == 0 {
+		return files
+	}
+	kept := make([]logFile, 0, len(files))
+	for _, lf := range files {
+		if strings.Contains(lf.name, "/") {
+			kept = append(kept, lf)
+			continue
+		}
+		if job := combinedJobName(lf.name); job != "" && hasPerStep[job] {
+			continue
+		}
+		kept = append(kept, lf)
+	}
+	return kept
+}
+
+// combinedJobName parses "0_Flash & Soak Test (wifi).txt" into the job
+// name GitHub uses as the per-step folder. Empty means "not a combined
+// job file".
+func combinedJobName(path string) string {
+	if strings.Contains(path, "/") {
+		return ""
+	}
+	base := strings.TrimSuffix(path, ".txt")
+	underscore := strings.IndexByte(base, '_')
+	if underscore < 1 || underscore == len(base)-1 {
+		return ""
+	}
+	for _, r := range base[:underscore] {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return base[underscore+1:]
 }
 
 // sortLogFiles orders entries by name so output is stable across calls.
@@ -434,9 +497,9 @@ func logFilesFromJobPayload(payload []byte, jobID int64) []logFile {
 			log.Debugf("Warning: could not read %s in log archive: %v", file.Name, err)
 			continue
 		}
-		logFiles = append(logFiles, logFile{name: file.Name, data: string(content)})
+		logFiles = append(logFiles, logFile{name: file.Name, data: stripANSI(string(content))})
 	}
-	return logFiles
+	return dropCombinedJobLogs(logFiles)
 }
 
 // GetWorkflowJobLogsFromRunArchive returns a job's logs by extracting the job's

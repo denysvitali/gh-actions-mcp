@@ -3,7 +3,9 @@ package github
 import (
 	"context"
 	"fmt"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/google/go-github/v89/github"
 )
@@ -93,12 +95,47 @@ func (c *Client) ResolveWorkflowID(ctx context.Context, workflowID string) (int6
 	}
 
 	for _, w := range workflows.Workflows {
-		if w.GetName() == workflowID || w.GetPath() == workflowID {
+		if workflowSelectorMatches(workflowID, w.GetName(), w.GetPath()) {
 			return w.GetID(), w.GetName(), nil
 		}
 	}
 
-	return 0, "", fmt.Errorf("workflow %s not found", workflowID)
+	return 0, "", fmt.Errorf("workflow %s not found%s", workflowID, workflowLookupHint(workflows.Workflows))
+}
+
+// workflowSelectorMatches reports whether selector identifies a workflow by
+// name, full path, or basename (e.g. "firmware-hil-test.yml").
+func workflowSelectorMatches(selector, name, filePath string) bool {
+	if selector == name || selector == filePath {
+		return true
+	}
+	base := path.Base(filePath)
+	return selector == base || strings.EqualFold(selector, base)
+}
+
+// workflowLookupHint lists a few known workflow names/paths so a miss is
+// actionable instead of a bare "not found".
+func workflowLookupHint(workflows []*github.Workflow) string {
+	if len(workflows) == 0 {
+		return ""
+	}
+	limit := 8
+	if len(workflows) < limit {
+		limit = len(workflows)
+	}
+	names := make([]string, 0, limit)
+	for _, w := range workflows[:limit] {
+		label := w.GetName()
+		if p := w.GetPath(); p != "" {
+			label = fmt.Sprintf("%s (%s)", label, path.Base(p))
+		}
+		names = append(names, label)
+	}
+	hint := "; known workflows: " + strings.Join(names, ", ")
+	if len(workflows) > limit {
+		hint += fmt.Sprintf(", … (%d more)", len(workflows)-limit)
+	}
+	return hint
 }
 
 // ParseWorkflowID parses a workflow ID string into an int64

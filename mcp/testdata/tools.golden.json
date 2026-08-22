@@ -139,6 +139,9 @@
             "array"
           ]
         },
+        "job_breakdown_omitted": {
+          "type": "integer"
+        },
         "job_name": {
           "type": "string"
         },
@@ -252,6 +255,9 @@
             "null",
             "array"
           ]
+        },
+        "step_breakdown_omitted": {
+          "type": "integer"
         },
         "step_name": {
           "type": "string"
