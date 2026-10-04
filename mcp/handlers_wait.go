@@ -21,10 +21,9 @@ const defaultWaitTimeoutMinutes = 30
 type waitTarget int
 
 const (
-	// waitTargetRun waits for the run's own status to reach completion.
+	// waitTargetRun ends on terminal run status or an observed failure.
 	waitTargetRun waitTarget = iota
-	// waitTargetAllJobs waits for every job in the run, regardless of whether
-	// the run itself has already been marked complete.
+	// waitTargetAllJobs requires terminal run status and every job completed.
 	waitTargetAllJobs
 )
 
@@ -51,12 +50,7 @@ func (s *MCPServer) waitRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest,
 	if timeout <= 0 {
 		timeout = defaultWaitTimeoutMinutes
 	}
-	var result *github.WaitRunResult
-	if target == waitTargetAllJobs {
-		result, err = client.WaitForAll(ctx, input.RunID, timeout)
-	} else {
-		result, err = client.WaitForRun(ctx, input.RunID, timeout)
-	}
+	result, err := client.WaitForRunAttempt(ctx, input.RunID, timeout, input.ExpectedAttempt, target == waitTargetAllJobs)
 	if result != nil {
 		output = *result
 	}

@@ -46,7 +46,7 @@ func TestStdioProcessConformance(t *testing.T) {
 
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 12)
+	assert.Len(t, tools.Tools, 14)
 	templates, err := session.ListResourceTemplates(ctx, nil)
 	require.NoError(t, err)
 	assert.Len(t, templates.ResourceTemplates, 1)

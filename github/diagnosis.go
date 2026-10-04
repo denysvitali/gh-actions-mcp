@@ -11,6 +11,7 @@ import (
 
 // FailureDiagnosis is the top-level result of diagnosing a failed workflow run
 type FailureDiagnosis struct {
+	RunAttempt int            `json:"run_attempt"`
 	RunID      int64          `json:"run_id"`
 	RunName    string         `json:"run_name"`
 	RunURL     string         `json:"run_url"`
@@ -20,16 +21,28 @@ type FailureDiagnosis struct {
 	FailedJobs []*FailedJob   `json:"failed_jobs"`
 	Flakiness  *FlakinessInfo `json:"flakiness,omitempty"`
 	Summary    string         `json:"summary"`
+	Truncated  bool           `json:"truncated,omitempty"`
 }
 
 // FailedJob represents a job that failed within a workflow run
 type FailedJob struct {
-	JobID       int64         `json:"job_id"`
-	JobName     string        `json:"job_name"`
-	Conclusion  string        `json:"conclusion"`
-	FailedSteps []*FailedStep `json:"failed_steps"`
-	ErrorLines  []string      `json:"error_lines"`
-	ErrorSource string        `json:"error_source,omitempty"`
+	JobID       int64                `json:"job_id"`
+	JobName     string               `json:"job_name"`
+	Conclusion  string               `json:"conclusion"`
+	FailedSteps []*FailedStep        `json:"failed_steps"`
+	ErrorLines  []string             `json:"error_lines"`
+	ErrorSource string               `json:"error_source,omitempty"`
+	Evidence    []DiagnosticEvidence `json:"evidence,omitempty"`
+	Fingerprint string               `json:"fingerprint,omitempty"`
+	Warnings    []string             `json:"warnings,omitempty"`
+}
+
+// DiagnosticEvidence records where an excerpt came from and how to expand it.
+type DiagnosticEvidence struct {
+	Source string `json:"source"`
+	JobID  int64  `json:"job_id"`
+	Line   int    `json:"line,omitempty"`
+	Text   string `json:"text"`
 }
 
 // FailedStep represents a step that failed within a job
@@ -41,11 +54,26 @@ type FailedStep struct {
 
 // FlakinessInfo contains information about whether this failure is likely a flake
 type FlakinessInfo struct {
-	RecentRuns       int    `json:"recent_runs_checked"`
-	RecentFailures   int    `json:"recent_failures"`
-	RecentSuccesses  int    `json:"recent_successes"`
-	SameFailureCount int    `json:"same_failure_count"`
-	Verdict          string `json:"verdict"` // "likely_flake", "likely_regression", "first_failure", "unknown"
+	RecentRuns             int               `json:"recent_runs_checked"`
+	RecentFailures         int               `json:"recent_failures"`
+	RecentSuccesses        int               `json:"recent_successes"`
+	FingerprintComparisons int               `json:"fingerprint_comparisons"`
+	MatchingFingerprints   int               `json:"matching_fingerprints"`
+	SameFailureCount       int               `json:"same_failure_count"`
+	Samples                []FlakinessSample `json:"samples,omitempty"`
+	SameSHASuccesses       int               `json:"same_sha_successes"`
+	SameSHAFailures        int               `json:"same_sha_failures"`
+	Basis                  string            `json:"basis"`
+	Verdict                string            `json:"verdict"` // "likely_flake", "likely_regression", "first_failure", "unknown"
+}
+
+// FlakinessSample makes the historical comparison auditable.
+type FlakinessSample struct {
+	RunID        int64                          `json:"run_id"`
+	HeadSHA      string                         `json:"head_sha,omitempty"`
+	Conclusion   string                         `json:"conclusion"`
+	SameCommit   bool                           `json:"same_commit"`
+	Fingerprints []FailureFingerprintComparison `json:"fingerprints,omitempty"`
 }
 
 // errorPatterns are regex patterns that identify error lines in CI logs.
@@ -96,16 +124,12 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 
 	diagnosis := &FailureDiagnosis{
 		RunID:      run.ID,
+		RunAttempt: run.RunAttempt,
 		RunName:    run.Name,
 		RunURL:     run.URL,
 		Branch:     run.Branch,
 		HeadSHA:    run.HeadSHA,
 		Conclusion: run.Conclusion,
-	}
-
-	if run.Status != "completed" {
-		diagnosis.Summary = fmt.Sprintf("Run %d is still %s (not completed yet)", runID, run.Status)
-		return diagnosis, nil
 	}
 
 	if run.Conclusion == "success" {
@@ -114,16 +138,22 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 	}
 
 	// 2. Get jobs and identify failures
-	jobs, err := c.GetWorkflowJobs(ctx, runID, "", 0)
+	jobs, err := c.GetWorkflowJobs(ctx, runID, "", run.RunAttempt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get jobs for run %d: %w", runID, err)
 	}
 
+	remainingLines := min(maxLogLines, 200)
+	remainingBytes := maxDiagnosticBytes
 	for _, job := range jobs {
 		if job.Conclusion != "failure" && job.Conclusion != "cancelled" && job.Conclusion != "timed_out" {
 			continue
 		}
 
+		if remainingLines <= 0 || remainingBytes <= 0 || len(diagnosis.FailedJobs) >= 20 {
+			diagnosis.Truncated = true
+			break
+		}
 		failedJob := &FailedJob{
 			JobID:      job.ID,
 			JobName:    job.Name,
@@ -141,15 +171,35 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 			}
 		}
 
-		// Check-run annotations contain structured, actionable failures without
-		// downloading a potentially large log archive. Logs remain the fallback
-		// because Actions does not emit annotations for every failure.
-		if errorLines := c.getCheckRunAnnotationErrors(ctx, job.ID, maxLogLines); len(errorLines) > 0 {
-			failedJob.ErrorLines = errorLines
+		annotations := c.getCheckRunAnnotationErrors(ctx, job.ID, remainingLines)
+		logs, logErr := c.jobLogs(ctx, job.ID, LogViewOptions{NoHeaders: true})
+		if logErr != nil {
+			logs, logErr = c.jobLogsFromRunArchive(ctx, runID, job.ID, LogViewOptions{NoHeaders: true})
+		}
+		if logErr != nil {
+			failedJob.Warnings = append(failedJob.Warnings, "Job logs unavailable; diagnosis may be incomplete")
+		}
+		failedJob.ErrorLines, failedJob.Evidence = mergeDiagnosticEvidence(job.ID, annotations, logs, remainingLines)
+		switch {
+		case len(annotations) > 0 && logs != "":
+			failedJob.ErrorSource = "check_annotations_and_logs"
+		case len(annotations) > 0:
 			failedJob.ErrorSource = "check_annotations"
-		} else {
-			failedJob.ErrorLines = c.extractErrorLines(ctx, runID, job.ID, maxLogLines)
+		default:
 			failedJob.ErrorSource = "logs"
+		}
+		for i, line := range failedJob.ErrorLines {
+			if len(line) > remainingBytes {
+				failedJob.ErrorLines = failedJob.ErrorLines[:i]
+				failedJob.Evidence = failedJob.Evidence[:i]
+				break
+			}
+			remainingBytes -= len(line)
+		}
+		remainingLines -= len(failedJob.ErrorLines)
+		failedJob.Fingerprint = diagnosticFingerprint(failedJob.ErrorLines)
+		if logs != "" {
+			failedJob.Fingerprint = diagnosticFingerprint(collectErrorLines(logs, 50))
 		}
 
 		diagnosis.FailedJobs = append(diagnosis.FailedJobs, failedJob)
@@ -162,6 +212,9 @@ func (c *Client) DiagnoseFailure(ctx context.Context, runID int64, checkFlakines
 
 	// 5. Build summary
 	diagnosis.Summary = c.buildDiagnosisSummary(diagnosis)
+	if run.Status != "completed" {
+		diagnosis.Summary = fmt.Sprintf("Run %d is still %s. %s", runID, run.Status, diagnosis.Summary)
+	}
 
 	return diagnosis, nil
 }
@@ -246,36 +299,10 @@ func collectErrorLines(logs string, maxLines int) []string {
 	if maxLines <= 0 {
 		maxLines = 200
 	}
-	lines := strings.Split(logs, "\n")
-	annotations := collectMatchingErrorLines(lines, maxLines, true)
-	if len(annotations) > 0 {
-		return annotations
-	}
-	return collectMatchingErrorLines(lines, maxLines, false)
+	lines, _ := mergeDiagnosticEvidence(0, nil, logs, maxLines)
+	return lines
 }
 
-func collectMatchingErrorLines(lines []string, maxLines int, annotationsOnly bool) []string {
-	var errorLines []string
-	seen := make(map[string]bool)
-	for _, line := range lines {
-		cleaned := normalizeErrorLine(line)
-		if cleaned == "" || seen[cleaned] {
-			continue
-		}
-		if !isErrorLine(cleaned, annotationsOnly) {
-			continue
-		}
-		seen[cleaned] = true
-		errorLines = append(errorLines, cleaned)
-		if len(errorLines) >= maxLines {
-			break
-		}
-	}
-	return errorLines
-}
-
-// normalizeErrorLine strips ANSI, GitHub timestamps, and surrounding
-// whitespace. Empty after stripping means "ignore this line".
 func normalizeErrorLine(line string) string {
 	cleaned := strings.TrimSpace(stripANSI(line))
 	if cleaned == "" {
@@ -329,14 +356,25 @@ func (c *Client) checkFlakiness(ctx context.Context, run *WorkflowRun, failedJob
 	successes := 0
 	failures := 0
 	checked := 0
+	fingerprintBudget := 3
 
 	for _, r := range recentRuns {
 		if r.ID == run.ID || r.Status != "completed" {
 			continue
 		}
-		checked++
-		if checked > maxCheck {
+		if checked >= maxCheck {
 			break
+		}
+		checked++
+		sameCommit := run.HeadSHA != "" && r.HeadSHA == run.HeadSHA && r.Event == run.Event
+		info.Samples = append(info.Samples, FlakinessSample{RunID: r.ID, HeadSHA: r.HeadSHA, Conclusion: r.Conclusion, SameCommit: sameCommit})
+		if sameCommit {
+			if r.Conclusion == "success" {
+				info.SameSHASuccesses++
+			}
+			if r.Conclusion == "failure" {
+				info.SameSHAFailures++
+			}
 		}
 
 		switch r.Conclusion {
@@ -349,6 +387,18 @@ func (c *Client) checkFlakiness(ctx context.Context, run *WorkflowRun, failedJob
 			if err != nil {
 				continue
 			}
+			if sameCommit && fingerprintBudget > 0 {
+				comparisons := c.compareFailureFingerprints(ctx, jobs, failedJobs, &fingerprintBudget)
+				info.Samples[len(info.Samples)-1].Fingerprints = comparisons
+				for _, comparison := range comparisons {
+					if comparison.Fingerprint != "" {
+						info.FingerprintComparisons++
+					}
+					if comparison.Matches {
+						info.MatchingFingerprints++
+					}
+				}
+			}
 			for _, j := range jobs {
 				if j.Conclusion == "failure" && failedJobNames[j.Name] {
 					sameFailures++
@@ -358,6 +408,7 @@ func (c *Client) checkFlakiness(ctx context.Context, run *WorkflowRun, failedJob
 		}
 	}
 
+	info.Basis = "Job names show recurrence only. Up to three historical job-log fingerprints are compared only at the same SHA and event; matching causes plus a success suggest nondeterminism, not a confirmed flaky test."
 	info.RecentRuns = checked
 	info.RecentFailures = failures
 	info.RecentSuccesses = successes
@@ -366,14 +417,14 @@ func (c *Client) checkFlakiness(ctx context.Context, run *WorkflowRun, failedJob
 	switch {
 	case checked == 0:
 		info.Verdict = "unknown"
-	case sameFailures >= 2 && successes > 0:
+	case info.SameSHASuccesses > 0:
 		info.Verdict = "likely_flake"
 	case successes == 0 && failures > 0:
-		info.Verdict = "likely_regression"
+		info.Verdict = "unknown"
 	case failures == 0:
 		info.Verdict = "first_failure"
 	default:
-		info.Verdict = "likely_regression"
+		info.Verdict = "unknown"
 	}
 
 	return info
@@ -396,7 +447,7 @@ func (c *Client) buildDiagnosisSummary(d *FailureDiagnosis) string {
 	}
 
 	fmt.Fprintf(&sb, "%d failed job(s): %s. ", len(d.FailedJobs), strings.Join(jobNames, ", "))
-	fmt.Fprintf(&sb, "%d error line(s) extracted from logs.", totalErrors)
+	fmt.Fprintf(&sb, "%d evidence line(s) extracted from annotations/logs.", totalErrors)
 
 	if d.Flakiness != nil {
 		fmt.Fprintf(&sb, " Flakiness verdict: %s", d.Flakiness.Verdict)

@@ -296,11 +296,17 @@
         },
         "max_error_lines": {
           "default": 50,
-          "description": "Maximum number of error lines to extract per job (default: 50)",
+          "description": "Total error-line budget across all jobs (default: 50, maximum: 200)",
+          "maximum": 200,
+          "minimum": 1,
           "type": "integer"
         },
         "owner": {
           "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Commit SHA, branch, or tag to diagnose when run_id is omitted; defaults to local HEAD for the configured repository.",
           "type": "string"
         },
         "repo": {
@@ -308,7 +314,7 @@
           "type": "string"
         },
         "run_id": {
-          "description": "The workflow run ID to diagnose. If omitted, diagnoses the latest failed run on the current branch.",
+          "description": "The workflow run ID to diagnose. If omitted, selects a failed or active run on the exact ref/HEAD commit.",
           "type": "integer"
         }
       },
@@ -343,6 +349,35 @@
               "error_source": {
                 "type": "string"
               },
+              "evidence": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "job_id": {
+                      "type": "integer"
+                    },
+                    "line": {
+                      "type": "integer"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "job_id",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
               "failed_steps": {
                 "items": {
                   "additionalProperties": false,
@@ -372,11 +407,23 @@
                   "array"
                 ]
               },
+              "fingerprint": {
+                "type": "string"
+              },
               "job_id": {
                 "type": "integer"
               },
               "job_name": {
                 "type": "string"
+              },
+              "warnings": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
               }
             },
             "required": [
@@ -399,6 +446,15 @@
         "flakiness": {
           "additionalProperties": false,
           "properties": {
+            "basis": {
+              "type": "string"
+            },
+            "fingerprint_comparisons": {
+              "type": "integer"
+            },
+            "matching_fingerprints": {
+              "type": "integer"
+            },
             "recent_failures": {
               "type": "integer"
             },
@@ -411,6 +467,73 @@
             "same_failure_count": {
               "type": "integer"
             },
+            "same_sha_failures": {
+              "type": "integer"
+            },
+            "same_sha_successes": {
+              "type": "integer"
+            },
+            "samples": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "conclusion": {
+                    "type": "string"
+                  },
+                  "fingerprints": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "fingerprint": {
+                          "type": "string"
+                        },
+                        "job_id": {
+                          "type": "integer"
+                        },
+                        "job_name": {
+                          "type": "string"
+                        },
+                        "matches": {
+                          "type": "boolean"
+                        },
+                        "warning": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "job_id",
+                        "job_name",
+                        "matches"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  },
+                  "head_sha": {
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "type": "integer"
+                  },
+                  "same_commit": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "run_id",
+                  "conclusion",
+                  "same_commit"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
             "verdict": {
               "type": "string"
             }
@@ -419,7 +542,12 @@
             "recent_runs_checked",
             "recent_failures",
             "recent_successes",
+            "fingerprint_comparisons",
+            "matching_fingerprints",
             "same_failure_count",
+            "same_sha_successes",
+            "same_sha_failures",
+            "basis",
             "verdict"
           ],
           "type": [
@@ -429,6 +557,9 @@
         },
         "head_sha": {
           "type": "string"
+        },
+        "run_attempt": {
+          "type": "integer"
         },
         "run_id": {
           "type": "integer"
@@ -441,9 +572,13 @@
         },
         "summary": {
           "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
         }
       },
       "required": [
+        "run_attempt",
         "run_id",
         "run_name",
         "run_url",
@@ -533,13 +668,35 @@
           "description": "The artifact ID",
           "type": "integer"
         },
+        "cursor": {
+          "description": "Opaque evidence continuation cursor; repeat the same selection arguments",
+          "type": "string"
+        },
         "file_pattern": {
           "description": "Optional: glob pattern to filter files within the artifact (e.g., '*.txt', 'logs/*.log')",
           "type": "string"
         },
+        "manifest_only": {
+          "description": "List file metadata without reading contents",
+          "type": "boolean"
+        },
+        "max_bytes": {
+          "default": 16384,
+          "description": "Maximum content bytes per response after filtering (default 16384; metadata excluded)",
+          "maximum": 262144,
+          "minimum": 256,
+          "type": "integer"
+        },
         "max_file_size": {
           "default": 1048576,
           "description": "Optional: maximum size of individual files to read in bytes (default: 1MB). Files larger than this will show size info only.",
+          "type": "integer"
+        },
+        "max_lines": {
+          "default": 100,
+          "description": "Maximum content lines per response after filtering (default 100)",
+          "maximum": 2000,
+          "minimum": 1,
           "type": "integer"
         },
         "owner": {
@@ -549,6 +706,10 @@
         "repo": {
           "description": "Optional: override repository name for this call",
           "type": "string"
+        },
+        "summary_only": {
+          "description": "Summarize recognized test reports without returning raw file contents",
+          "type": "boolean"
         }
       },
       "required": [
@@ -560,7 +721,13 @@
     "outputSchema": {
       "additionalProperties": false,
       "properties": {
+        "file_byte_offset": {
+          "type": "integer"
+        },
         "file_count": {
+          "type": "integer"
+        },
+        "file_offset": {
           "type": "integer"
         },
         "files": {
@@ -600,8 +767,68 @@
         "name": {
           "type": "string"
         },
+        "next_cursor": {
+          "type": "string"
+        },
+        "next_offset": {
+          "type": [
+            "null",
+            "integer"
+          ]
+        },
+        "reports": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "examples": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "failures": {
+                "type": "integer"
+              },
+              "format": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "warning": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "format",
+              "total",
+              "failures"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "returned_bytes": {
+          "type": "integer"
+        },
+        "returned_lines": {
+          "type": "integer"
+        },
         "size_in_bytes": {
           "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -609,7 +836,11 @@
         "id",
         "size_in_bytes",
         "files",
-        "file_count"
+        "file_count",
+        "truncated",
+        "file_offset",
+        "returned_bytes",
+        "returned_lines"
       ],
       "type": "object"
     }
@@ -684,6 +915,10 @@
           "description": "For element=logs: number of lines to show before and after each search match (default: 0)",
           "type": "integer"
         },
+        "cursor": {
+          "description": "Opaque evidence continuation cursor; repeat the same selection arguments",
+          "type": "string"
+        },
         "element": {
           "default": "info",
           "description": "Element to retrieve: info (default), jobs, logs, log_files, log_sections, artifacts, artifact_content. Invalid values return a validation error with allowed options.",
@@ -708,16 +943,30 @@
           "type": "string"
         },
         "head": {
-          "description": "For element=logs: return the first N lines of logs. Without head or tail, logs are auto-truncated to the last ~100 lines",
+          "description": "For element=logs: select the first N lines before applying max_bytes/max_lines budgets",
           "type": "integer"
         },
         "job_id": {
           "description": "For element=logs or element=log_sections: specific job ID to get logs/sections for",
           "type": "integer"
         },
+        "max_bytes": {
+          "default": 16384,
+          "description": "Maximum content bytes per response after filtering (default 16384; metadata excluded)",
+          "maximum": 262144,
+          "minimum": 256,
+          "type": "integer"
+        },
         "max_file_size": {
           "default": 1048576,
           "description": "For element=artifact_content: maximum size of individual files to read in bytes (default: 1MB)",
+          "type": "integer"
+        },
+        "max_lines": {
+          "default": 100,
+          "description": "Maximum content lines per response after filtering (default 100)",
+          "maximum": 2000,
+          "minimum": 1,
           "type": "integer"
         },
         "no_headers": {
@@ -757,7 +1006,7 @@
           "type": "string"
         },
         "tail": {
-          "description": "For element=logs: return the last N lines of logs (default: auto-truncated to last ~100 lines if neither head nor tail is specified)",
+          "description": "For element=logs: select the last N lines before applying max_bytes/max_lines budgets",
           "type": "integer"
         }
       },
@@ -975,11 +1224,20 @@
     "outputSchema": {
       "additionalProperties": false,
       "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
         "action": {
           "type": "string"
         },
+        "expected_attempt": {
+          "type": "integer"
+        },
         "message": {
           "type": "string"
+        },
+        "observed_attempt": {
+          "type": "integer"
         },
         "run_id": {
           "type": "integer"
@@ -989,6 +1247,7 @@
         }
       },
       "required": [
+        "accepted",
         "run_id",
         "action",
         "status"
@@ -1002,9 +1261,511 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Wait silently for every job in a workflow run to complete, regardless of job status",
+    "description": "Verify an immutable commit or run attempt, optionally diagnose failures, and return a resumable monitoring cursor. Without expected_workflows coverage is observed Actions workflows only, not required branch checks.",
     "inputSchema": {
       "properties": {
+        "diagnose_on_failure": {
+          "description": "Include bounded failure evidence (up to two changed failed workflows).",
+          "type": "boolean"
+        },
+        "expected_attempt": {
+          "description": "With run_id, wait for this exact rerun attempt.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "expected_workflows": {
+          "description": "Workflow IDs or names expected on this commit. Missing workflows keep verification pending.",
+          "items": {
+            "maxLength": 256,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "type": "array"
+        },
+        "owner": {
+          "description": "Optional: override repository owner for this call",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Commit SHA, branch, or tag; defaults to local HEAD only for the configured repository.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Optional: override repository name for this call",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Optional: monitor this run instead of a commit.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "wait_seconds": {
+          "default": 0,
+          "description": "Long-poll budget; 0 returns one snapshot.",
+          "maximum": 30,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "name": "verify_commit",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "changed_only": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "diagnoses": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "failed_jobs": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "conclusion": {
+                      "type": "string"
+                    },
+                    "error_lines": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "error_source": {
+                      "type": "string"
+                    },
+                    "evidence": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "job_id": {
+                            "type": "integer"
+                          },
+                          "line": {
+                            "type": "integer"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "job_id",
+                          "text"
+                        ],
+                        "type": "object"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "failed_steps": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "conclusion": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "number",
+                          "conclusion"
+                        ],
+                        "type": [
+                          "null",
+                          "object"
+                        ]
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "job_id": {
+                      "type": "integer"
+                    },
+                    "job_name": {
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "job_name",
+                    "conclusion",
+                    "failed_steps",
+                    "error_lines"
+                  ],
+                  "type": [
+                    "null",
+                    "object"
+                  ]
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "flakiness": {
+                "additionalProperties": false,
+                "properties": {
+                  "basis": {
+                    "type": "string"
+                  },
+                  "fingerprint_comparisons": {
+                    "type": "integer"
+                  },
+                  "matching_fingerprints": {
+                    "type": "integer"
+                  },
+                  "recent_failures": {
+                    "type": "integer"
+                  },
+                  "recent_runs_checked": {
+                    "type": "integer"
+                  },
+                  "recent_successes": {
+                    "type": "integer"
+                  },
+                  "same_failure_count": {
+                    "type": "integer"
+                  },
+                  "same_sha_failures": {
+                    "type": "integer"
+                  },
+                  "same_sha_successes": {
+                    "type": "integer"
+                  },
+                  "samples": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "conclusion": {
+                          "type": "string"
+                        },
+                        "fingerprints": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "fingerprint": {
+                                "type": "string"
+                              },
+                              "job_id": {
+                                "type": "integer"
+                              },
+                              "job_name": {
+                                "type": "string"
+                              },
+                              "matches": {
+                                "type": "boolean"
+                              },
+                              "warning": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "job_id",
+                              "job_name",
+                              "matches"
+                            ],
+                            "type": "object"
+                          },
+                          "type": [
+                            "null",
+                            "array"
+                          ]
+                        },
+                        "head_sha": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "integer"
+                        },
+                        "same_commit": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "run_id",
+                        "conclusion",
+                        "same_commit"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "recent_runs_checked",
+                  "recent_failures",
+                  "recent_successes",
+                  "fingerprint_comparisons",
+                  "matching_fingerprints",
+                  "same_failure_count",
+                  "same_sha_successes",
+                  "same_sha_failures",
+                  "basis",
+                  "verdict"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "run_attempt": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "integer"
+              },
+              "run_name": {
+                "type": "string"
+              },
+              "run_url": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "run_attempt",
+              "run_id",
+              "run_name",
+              "run_url",
+              "branch",
+              "head_sha",
+              "conclusion",
+              "failed_jobs",
+              "summary"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "expected_attempt": {
+          "type": "integer"
+        },
+        "jobs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "type": "integer"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "run_id",
+              "attempt",
+              "name",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "missing_workflows": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "next_poll_seconds": {
+          "type": "integer"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "removed": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "repository": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "stop_reason": {
+          "type": "string"
+        },
+        "total_workflows": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "workflows": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "type": "integer"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "workflow_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "workflow_id",
+              "attempt",
+              "name",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "sha",
+        "state",
+        "coverage",
+        "observed_at",
+        "complete",
+        "stop_reason",
+        "total_workflows",
+        "missing_workflows",
+        "workflows",
+        "jobs",
+        "truncated",
+        "changed_only",
+        "next_poll_seconds",
+        "cursor"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Wait silently for terminal run status and completion of every job across all pages, regardless of job conclusion.",
+    "inputSchema": {
+      "properties": {
+        "expected_attempt": {
+          "description": "Expected run attempt, such as manage_run.expected_attempt after a rerun. A newer attempt is reported as superseded.",
+          "minimum": 1,
+          "type": "integer"
+        },
         "owner": {
           "description": "Optional: override repository owner for this call",
           "type": "string"
@@ -1043,8 +1804,20 @@
         "duration": {
           "type": "number"
         },
+        "head_sha": {
+          "type": "string"
+        },
         "poll_count": {
           "type": "integer"
+        },
+        "run_attempt": {
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "run_status": {
+          "type": "string"
         },
         "run_url": {
           "type": "string"
@@ -1055,11 +1828,16 @@
         "status": {
           "type": "string"
         },
+        "stop_reason": {
+          "type": "string"
+        },
         "timeout_reached": {
           "type": "boolean"
         }
       },
       "required": [
+        "run_id",
+        "run_attempt",
         "status",
         "duration",
         "run_url",
@@ -1075,7 +1853,7 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Wait for all CI check runs for a commit ref (SHA, branch, or tag) to complete.",
+    "description": "Resolve a ref to one immutable commit and wait for its discovered Actions workflows to complete. Does not cover third-party checks or prove all expected workflows registered; use verify_commit to name expected workflows.",
     "inputSchema": {
       "properties": {
         "owner": {
@@ -1119,6 +1897,9 @@
         "overall_conclusion": {
           "type": "string"
         },
+        "sha": {
+          "type": "string"
+        },
         "timeout_reached": {
           "type": "boolean"
         }
@@ -1139,9 +1920,14 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Wait silently for a workflow run to complete (no output during polling)",
+    "description": "Wait silently until the run completes or a job/step failure is observed. failure_observed does not mean the run has completed; use watch_run for bounded resumable monitoring.",
     "inputSchema": {
       "properties": {
+        "expected_attempt": {
+          "description": "Expected run attempt, such as manage_run.expected_attempt after a rerun. A newer attempt is reported as superseded.",
+          "minimum": 1,
+          "type": "integer"
+        },
         "owner": {
           "description": "Optional: override repository owner for this call",
           "type": "string"
@@ -1180,8 +1966,20 @@
         "duration": {
           "type": "number"
         },
+        "head_sha": {
+          "type": "string"
+        },
         "poll_count": {
           "type": "integer"
+        },
+        "run_attempt": {
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "integer"
+        },
+        "run_status": {
+          "type": "string"
         },
         "run_url": {
           "type": "string"
@@ -1192,16 +1990,489 @@
         "status": {
           "type": "string"
         },
+        "stop_reason": {
+          "type": "string"
+        },
         "timeout_reached": {
           "type": "boolean"
         }
       },
       "required": [
+        "run_id",
+        "run_attempt",
         "status",
         "duration",
         "run_url",
         "timeout_reached",
         "poll_count"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Resume a pinned CI target using its signed cursor. Returns changed workflows/jobs only, completion evidence, and the next cursor. No remote mutations.",
+    "inputSchema": {
+      "properties": {
+        "cursor": {
+          "description": "Cursor from verify_commit or watch_ci; expires after 24 hours.",
+          "type": "string"
+        },
+        "wait_seconds": {
+          "default": 0,
+          "maximum": 30,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cursor"
+      ],
+      "type": "object"
+    },
+    "name": "watch_ci",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "changed_only": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "string"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "diagnoses": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "failed_jobs": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "conclusion": {
+                      "type": "string"
+                    },
+                    "error_lines": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "error_source": {
+                      "type": "string"
+                    },
+                    "evidence": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "job_id": {
+                            "type": "integer"
+                          },
+                          "line": {
+                            "type": "integer"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "job_id",
+                          "text"
+                        ],
+                        "type": "object"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "failed_steps": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "conclusion": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "number",
+                          "conclusion"
+                        ],
+                        "type": [
+                          "null",
+                          "object"
+                        ]
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "job_id": {
+                      "type": "integer"
+                    },
+                    "job_name": {
+                      "type": "string"
+                    },
+                    "warnings": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": [
+                        "null",
+                        "array"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "job_name",
+                    "conclusion",
+                    "failed_steps",
+                    "error_lines"
+                  ],
+                  "type": [
+                    "null",
+                    "object"
+                  ]
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "flakiness": {
+                "additionalProperties": false,
+                "properties": {
+                  "basis": {
+                    "type": "string"
+                  },
+                  "fingerprint_comparisons": {
+                    "type": "integer"
+                  },
+                  "matching_fingerprints": {
+                    "type": "integer"
+                  },
+                  "recent_failures": {
+                    "type": "integer"
+                  },
+                  "recent_runs_checked": {
+                    "type": "integer"
+                  },
+                  "recent_successes": {
+                    "type": "integer"
+                  },
+                  "same_failure_count": {
+                    "type": "integer"
+                  },
+                  "same_sha_failures": {
+                    "type": "integer"
+                  },
+                  "same_sha_successes": {
+                    "type": "integer"
+                  },
+                  "samples": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "conclusion": {
+                          "type": "string"
+                        },
+                        "fingerprints": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "fingerprint": {
+                                "type": "string"
+                              },
+                              "job_id": {
+                                "type": "integer"
+                              },
+                              "job_name": {
+                                "type": "string"
+                              },
+                              "matches": {
+                                "type": "boolean"
+                              },
+                              "warning": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "job_id",
+                              "job_name",
+                              "matches"
+                            ],
+                            "type": "object"
+                          },
+                          "type": [
+                            "null",
+                            "array"
+                          ]
+                        },
+                        "head_sha": {
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "type": "integer"
+                        },
+                        "same_commit": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "run_id",
+                        "conclusion",
+                        "same_commit"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  },
+                  "verdict": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "recent_runs_checked",
+                  "recent_failures",
+                  "recent_successes",
+                  "fingerprint_comparisons",
+                  "matching_fingerprints",
+                  "same_failure_count",
+                  "same_sha_successes",
+                  "same_sha_failures",
+                  "basis",
+                  "verdict"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "run_attempt": {
+                "type": "integer"
+              },
+              "run_id": {
+                "type": "integer"
+              },
+              "run_name": {
+                "type": "string"
+              },
+              "run_url": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "run_attempt",
+              "run_id",
+              "run_name",
+              "run_url",
+              "branch",
+              "head_sha",
+              "conclusion",
+              "failed_jobs",
+              "summary"
+            ],
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "expected_attempt": {
+          "type": "integer"
+        },
+        "jobs": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "type": "integer"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "run_id",
+              "attempt",
+              "name",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "missing_workflows": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "next_poll_seconds": {
+          "type": "integer"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "removed": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "repository": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "stop_reason": {
+          "type": "string"
+        },
+        "total_workflows": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "workflows": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "type": "integer"
+              },
+              "conclusion": {
+                "type": "string"
+              },
+              "id": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "workflow_id": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "workflow_id",
+              "attempt",
+              "name",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "sha",
+        "state",
+        "coverage",
+        "observed_at",
+        "complete",
+        "stop_reason",
+        "total_workflows",
+        "missing_workflows",
+        "workflows",
+        "jobs",
+        "truncated",
+        "changed_only",
+        "next_poll_seconds",
+        "cursor"
       ],
       "type": "object"
     }

@@ -244,11 +244,11 @@ func TestGetWorkflowJobs(t *testing.T) {
 		assert.Empty(t, jobs[2].Labels)
 	})
 
-	t.Run("attempt number filters client-side", func(t *testing.T) {
+	t.Run("attempt number selects attempt endpoint", func(t *testing.T) {
 		t.Parallel()
 
 		mux := http.NewServeMux()
-		mux.HandleFunc("/repos/owner/repo/actions/runs/9/jobs", jsonHandler(jobsJSON))
+		mux.HandleFunc("/repos/owner/repo/actions/runs/9/attempts/2/jobs", jsonHandler(jobsJSON))
 		jobs, err := newMuxClient(t, mux).GetWorkflowJobs(context.Background(), 9, "", 2)
 		require.NoError(t, err)
 		require.Len(t, jobs, 1)
@@ -290,12 +290,8 @@ func TestRerunWorkflowRun(t *testing.T) {
 	assert.NoError(t, newMuxClient(t, mux).RerunWorkflowRun(context.Background(), 1))
 }
 
-// TestCancelWorkflowRun_202IsReportedAsAnError pins the CURRENT behaviour for the
-// status code GitHub actually returns when a cancellation is accepted (202).
-// go-github surfaces 202 as *github.AcceptedError, so a successful cancellation
-// is reported as a failure. Pinned here so a refactor cannot change it silently;
-// the underlying defect is reported separately, not fixed.
-func TestCancelWorkflowRun_202IsReportedAsAnError(t *testing.T) {
+// HTTP 202 is an acceptance receipt, not a completed cancellation.
+func TestCancelWorkflowRun_202IsAccepted(t *testing.T) {
 	t.Parallel()
 
 	mux := http.NewServeMux()
@@ -308,14 +304,13 @@ func TestCancelWorkflowRun_202IsReportedAsAnError(t *testing.T) {
 	client := newMuxClient(t, mux)
 
 	err := client.CancelWorkflowRun(context.Background(), 1)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to cancel workflow run 1")
-	assert.Contains(t, err.Error(), "job scheduled on GitHub side")
+	require.NoError(t, err)
 
-	// ManageRun folds the same error into a "failed" result rather than returning it.
+	// ManageRun exposes acceptance without claiming cancellation completed.
 	result, err := client.ManageRun(context.Background(), 1, ManageRunActionCancel)
 	require.NoError(t, err)
-	assert.Equal(t, "failed", result.Status)
+	assert.Equal(t, "success", result.Status)
+	assert.True(t, result.Accepted)
 
 	// Any other 2xx is treated as success.
 	assert.NoError(t, client.CancelWorkflowRun(context.Background(), 2))
@@ -348,4 +343,22 @@ func TestGetWorkflowRuns(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to list workflow runs for workflow 50")
 	})
+}
+
+func TestGetWorkflowJobsReadsAllAttemptPages(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/9/attempts/2/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "" {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s/repos/owner/repo/actions/runs/9/attempts/2/jobs?page=2>; rel="next"`, r.Host))
+			jsonHandler(`{"total_count":2,"jobs":[{"id":1,"run_attempt":2,"status":"completed"}]}`)(w, r)
+			return
+		}
+		jsonHandler(`{"total_count":2,"jobs":[{"id":2,"run_attempt":2,"status":"queued"}]}`)(w, r)
+	})
+	jobs, err := newMuxClient(t, mux).GetWorkflowJobs(context.Background(), 9, "", 2)
+	require.NoError(t, err)
+	require.Len(t, jobs, 2)
+	assert.Equal(t, "queued", jobs[1].Status)
+	assert.Equal(t, int64(2), jobs[1].RunAttempt)
 }

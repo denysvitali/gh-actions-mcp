@@ -146,11 +146,12 @@ func openZipViaTempFile(body io.Reader) (*zip.Reader, int64, func(), error) {
 // omitted.
 func logFilesFromZip(zipReader *zip.Reader) []logFile {
 	var logFiles []logFile
+	remaining := int64(maxArchiveBytes)
 	for _, file := range zipReader.File {
 		if file.FileInfo().IsDir() {
 			continue
 		}
-		if file.UncompressedSize64 > uint64(maxLogFileSize) {
+		if file.UncompressedSize64 > uint64(maxLogFileSize) || file.UncompressedSize64 > uint64(remaining) {
 			log.Debugf("Skipping large log file %s (%d bytes)", file.Name, file.UncompressedSize64)
 			continue
 		}
@@ -167,6 +168,7 @@ func logFilesFromZip(zipReader *zip.Reader) []logFile {
 			continue
 		}
 
+		remaining -= int64(len(content))
 		logFiles = append(logFiles, logFile{name: file.Name, data: stripANSI(string(content))})
 	}
 
@@ -325,35 +327,27 @@ func applyLineWindow(logStr string, opts LogViewOptions) string {
 // call with a redirect to pre-signed storage, and those URLs reject requests that
 // also carry an Authorization header.
 func (c *Client) runLogArchive(ctx context.Context, runID int64) ([]logFile, error) {
-	url, resp, err := c.gh.Actions.GetWorkflowRunLogs(ctx, c.owner, c.repo, runID, maxRedirects)
+	archive, err := c.cachedRunArchive(ctx, runID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get workflow log URL for run %d: %w", runID, err)
+		return nil, err
 	}
-	if resp != nil && resp.StatusCode != 0 {
-		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
-			return nil, newHTTPErrorFromGitHub(resp, "failed to get workflow logs")
-		}
-	}
-
-	logFiles, _, err := readZipArchive(url.String(), presignedHTTPClient)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read log archive for run %d: %w", runID, err)
-	}
-	return logFiles, nil
+	return logFilesFromZip(archive), nil
 }
 
 // GetWorkflowLogFiles lists the entries in a workflow run's log archive with their
 // decoded sizes, without returning any content.
 func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFileInfo, error) {
-	logFiles, err := c.runLogArchive(ctx, runID)
+	archive, err := c.cachedRunArchive(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
-
-	result := make([]*LogFileInfo, 0, len(logFiles))
-	for _, lf := range logFiles {
-		result = append(result, &LogFileInfo{Path: lf.name, Size: int64(len(lf.data))})
+	result := make([]*LogFileInfo, 0, len(archive.File))
+	for _, file := range archive.File {
+		if !file.FileInfo().IsDir() {
+			result = append(result, &LogFileInfo{Path: file.Name, Size: int64(file.UncompressedSize64)})
+		}
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
 	return result, nil
 }
 
@@ -382,35 +376,29 @@ func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, o
 // workflowLogs is the single implementation behind GetWorkflowLogs and
 // GetWorkflowLogsWithPattern.
 func (c *Client) workflowLogs(ctx context.Context, runID int64, filePattern string, opts LogViewOptions) (string, error) {
-	logFiles, err := c.runLogArchive(ctx, runID)
+	if filePattern != "" {
+		if _, err := filepath.Match(filePattern, ""); err != nil {
+			return "", fmt.Errorf("invalid file pattern %q: %w", filePattern, err)
+		}
+	}
+	archive, err := c.cachedRunArchive(ctx, runID)
 	if err != nil {
 		return "", err
 	}
+	selected := zip.Reader{}
+	selected.File = nil
+	for _, file := range archive.File {
+		matches := filePattern == ""
+		if !matches {
+			matches, _ = filepath.Match(filePattern, file.Name)
+		}
+		if matches {
+			selected.File = append(selected.File, file)
+		}
+	}
+	logFiles := logFilesFromZip(&selected)
 
-	logFiles, err = matchLogFiles(logFiles, filePattern)
-	if err != nil {
-		return "", err
-	}
 	return formatLogFiles(logFiles, opts)
-}
-
-// matchLogFiles keeps the entries matching pattern. An empty pattern keeps
-// everything; an invalid pattern is an error.
-func matchLogFiles(logFiles []logFile, pattern string) ([]logFile, error) {
-	if pattern == "" {
-		return logFiles, nil
-	}
-	filtered := make([]logFile, 0, len(logFiles))
-	for _, lf := range logFiles {
-		matched, err := filepath.Match(pattern, lf.name)
-		if err != nil {
-			return nil, fmt.Errorf("invalid file pattern %q: %w", pattern, err)
-		}
-		if matched {
-			filtered = append(filtered, lf)
-		}
-	}
-	return filtered, nil
 }
 
 // GetWorkflowJobLogs returns the logs of a single job.
@@ -478,28 +466,10 @@ func (c *Client) jobLogPayload(ctx context.Context, jobID int64) ([]byte, error)
 func logFilesFromJobPayload(payload []byte, jobID int64) []logFile {
 	zipReader, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
 	if err != nil {
-		return []logFile{{name: fmt.Sprintf("job-%d.log", jobID), data: string(payload)}}
+		return []logFile{{name: fmt.Sprintf("job-%d.log", jobID), data: stripANSI(string(payload))}}
 	}
 
-	var logFiles []logFile
-	for _, file := range zipReader.File {
-		if file.FileInfo().IsDir() {
-			continue
-		}
-		rc, err := file.Open()
-		if err != nil {
-			log.Debugf("Warning: could not open %s in log archive: %v", file.Name, err)
-			continue
-		}
-		content, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			log.Debugf("Warning: could not read %s in log archive: %v", file.Name, err)
-			continue
-		}
-		logFiles = append(logFiles, logFile{name: file.Name, data: stripANSI(string(content))})
-	}
-	return dropCombinedJobLogs(logFiles)
+	return logFilesFromZip(zipReader)
 }
 
 // GetWorkflowJobLogsFromRunArchive returns a job's logs by extracting the job's

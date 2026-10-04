@@ -74,14 +74,16 @@ func (s *MCPServer) registerDiagnosisTools(b toolBuilder) {
 		b.ReadOnly(),
 		b.repoOverrides(),
 		b.WithNumber("run_id",
-			b.Description("The workflow run ID to diagnose. If omitted, diagnoses the latest failed run on the current branch."),
+			b.Description("The workflow run ID to diagnose. If omitted, selects a failed or active run on the exact ref/HEAD commit."),
 		),
+		b.WithString("ref", b.Description("Commit SHA, branch, or tag to diagnose when run_id is omitted; defaults to local HEAD for the configured repository.")),
 		b.WithBoolean("check_flakiness",
 			b.Description("Compare against recent runs to detect flaky tests (default: true). Adds a few extra API calls."),
 		),
 		b.WithNumber("max_error_lines",
-			b.Description("Maximum number of error lines to extract per job (default: 50)"),
+			b.Description("Total error-line budget across all jobs (default: 50, maximum: 200)"),
 			b.DefaultNumber(50),
+			b.Minimum(1), b.Maximum(200),
 		),
 	), s.diagnoseFailureTyped)
 }

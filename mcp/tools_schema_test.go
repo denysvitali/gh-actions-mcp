@@ -96,9 +96,11 @@ func TestRegisteredToolNames(t *testing.T) {
 		"list_runs",
 		"list_workflows",
 		"manage_run",
+		"verify_commit",
 		"wait_all",
 		"wait_for_commit_checks",
 		"wait_for_run",
+		"watch_ci",
 	}, names)
 }
 

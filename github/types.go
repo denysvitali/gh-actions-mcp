@@ -18,6 +18,7 @@ type WorkflowRun struct {
 	StartedAt       string  `json:"started_at,omitempty"`
 	URL             string  `json:"url"`
 	RunNumber       int     `json:"run_number"`
+	RunAttempt      int     `json:"run_attempt"`
 	WorkflowID      int64   `json:"workflow_id"`
 	DurationSeconds float64 `json:"duration,omitempty"`
 }
@@ -25,6 +26,7 @@ type WorkflowRun struct {
 // WorkflowRunMinimal is a compact workflow run representation for reduced token usage
 type WorkflowRunMinimal struct {
 	ID              int64   `json:"id"`
+	RunAttempt      int     `json:"run_attempt"`
 	Name            string  `json:"name"`
 	Status          string  `json:"status"`
 	Conclusion      string  `json:"conclusion,omitempty"`
@@ -55,6 +57,7 @@ type WorkflowRunFull struct {
 	UpdatedAt       string  `json:"updated_at"`
 	URL             string  `json:"url"`
 	RunNumber       int     `json:"run_number"`
+	RunAttempt      int     `json:"run_attempt"`
 	WorkflowID      int64   `json:"workflow_id"`
 	HeadSHA         string  `json:"head_sha"`
 	StartedAt       string  `json:"started_at,omitempty"`
@@ -86,6 +89,7 @@ type Job struct {
 	RunnerGroup     string   `json:"runner_group,omitempty"`
 	Labels          []string `json:"labels,omitempty"`
 	WorkflowRunID   int64    `json:"workflow_run_id"`
+	RunAttempt      int64    `json:"run_attempt"`
 	Steps           []*Step  `json:"steps,omitempty"`
 }
 
@@ -106,6 +110,7 @@ func workflowRunFromGitHub(run *github.WorkflowRun) *WorkflowRun {
 		StartedAt:       formatTime(run.RunStartedAt),
 		URL:             run.GetHTMLURL(),
 		RunNumber:       run.GetRunNumber(),
+		RunAttempt:      run.GetRunAttempt(),
 		WorkflowID:      run.GetWorkflowID(),
 		DurationSeconds: durationSeconds(run.RunStartedAt, &updatedAt),
 	}

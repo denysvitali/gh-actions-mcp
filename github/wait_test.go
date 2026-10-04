@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,9 @@ func TestWaitForRunFailsFastOnFailedJob(t *testing.T) {
 
 	result, err := client.WaitForRun(context.Background(), 1, 1)
 	require.NoError(t, err)
-	assert.Equal(t, "completed", result.Status)
+	assert.Equal(t, "failure_observed", result.Status)
+	assert.Equal(t, "in_progress", result.RunStatus)
+	assert.Empty(t, result.CompletedAt)
 	assert.Equal(t, "failure", result.Conclusion)
 }
 
@@ -36,7 +39,7 @@ func TestWaitForAllWaitsForJobsRegardlessOfStatus(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/owner/repo/actions/runs/2", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":2,"status":"in_progress","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.com/run/2"}`))
+		_, _ = w.Write([]byte(`{"id":2,"status":"completed","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.com/run/2"}`))
 	})
 	mux.HandleFunc("/repos/owner/repo/actions/runs/2/jobs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -114,7 +117,7 @@ func TestWaitForRun_TerminatesOnFirstPoll(t *testing.T) {
 			name:           "failed job conclusion ends a normal wait early",
 			run:            `{"id":1,"status":"in_progress","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.com/run/1"}`,
 			jobs:           `{"total_count":1,"jobs":[{"id":10,"status":"completed","conclusion":"timed_out"}]}`,
-			wantStatus:     "completed",
+			wantStatus:     "failure_observed",
 			wantConclusion: "timed_out",
 		},
 		{
@@ -123,7 +126,7 @@ func TestWaitForRun_TerminatesOnFirstPoll(t *testing.T) {
 			name:           "failed step supplies the conclusion when the job has none",
 			run:            `{"id":1,"status":"in_progress","created_at":"2026-01-01T00:00:00Z","html_url":"https://example.com/run/1"}`,
 			jobs:           `{"total_count":1,"jobs":[{"id":10,"status":"in_progress","steps":[{"name":"Build","status":"completed","conclusion":"timed_out"}]}]}`,
-			wantStatus:     "completed",
+			wantStatus:     "failure_observed",
 			wantConclusion: "timed_out",
 		},
 		{
@@ -274,12 +277,12 @@ func TestWaitForCommitChecks(t *testing.T) {
 
 		mux := http.NewServeMux()
 		mux.HandleFunc("/repos/owner/repo/actions/runs", jsonHandler(`{"total_count":2,"workflow_runs":[
-			{"id":1,"name":"CI","status":"completed","conclusion":"success","head_sha":"abcdef1234567890","run_number":2},
-			{"id":2,"name":"Lint","status":"completed","conclusion":"failure","head_sha":"abcdef1234567890","run_number":1}
+			{"id":1,"name":"CI","status":"completed","conclusion":"success","head_sha":"abcdef1234567890abcdef1234567890abcdef12","run_number":2},
+			{"id":2,"name":"Lint","status":"completed","conclusion":"failure","head_sha":"abcdef1234567890abcdef1234567890abcdef12","run_number":1}
 		]}`))
 		client := newMuxClient(t, mux)
 
-		result, err := client.WaitForCommitChecks(context.Background(), "abcdef1234567890", 1)
+		result, err := client.WaitForCommitChecks(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", 1)
 		require.NoError(t, err)
 		assert.Equal(t, "failure", result.OverallConclusion)
 		assert.Equal(t, 2, result.ChecksTotal)
@@ -297,7 +300,7 @@ func TestWaitForCommitChecks(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		result, err := client.WaitForCommitChecks(ctx, "abcdef1234567890", 1)
+		result, err := client.WaitForCommitChecks(ctx, "abcdef1234567890abcdef1234567890abcdef12", 1)
 		require.ErrorIs(t, err, context.Canceled)
 		require.NotNil(t, result)
 		assert.Equal(t, "cancelled", result.OverallConclusion)
@@ -310,7 +313,7 @@ func TestWaitForCommitChecks(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/runs", statusHandler(http.StatusForbidden))
 		client := newMuxClient(t, mux)
 
-		result, err := client.WaitForCommitChecks(context.Background(), "abcdef1234567890", 1)
+		result, err := client.WaitForCommitChecks(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", 1)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to get check runs")
 		assert.Nil(t, result)
@@ -330,7 +333,7 @@ func TestManageRun(t *testing.T) {
 			name:        "cancel",
 			action:      ManageRunActionCancel,
 			path:        "/repos/owner/repo/actions/runs/1/cancel",
-			wantMessage: "Successfully cancelled workflow run 1",
+			wantMessage: "Cancellation accepted for workflow run 1",
 		},
 		{
 			name:        "rerun",
@@ -351,6 +354,7 @@ func TestManageRun(t *testing.T) {
 			t.Parallel()
 
 			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/owner/repo/actions/runs/1", jsonHandler(`{"id":1,"run_attempt":2,"status":"completed"}`))
 			mux.HandleFunc(tt.path, func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusCreated)
 			})
@@ -470,13 +474,11 @@ func TestNextWaitAction(t *testing.T) {
 			wantReason:     waitReasonJobFailed,
 		},
 		{
-			name:           "wait-all: every job completed ends the wait",
-			mode:           waitModeAllJobs,
-			run:            &WorkflowRun{Status: "in_progress", Conclusion: "failure"},
-			jobs:           []*Job{{Status: "completed"}, {Status: "completed"}},
-			wantDone:       true,
-			wantConclusion: "failure",
-			wantReason:     waitReasonAllJobsDone,
+			name:     "wait-all: complete jobs do not imply terminal run",
+			mode:     waitModeAllJobs,
+			run:      &WorkflowRun{Status: "in_progress", Conclusion: "failure"},
+			jobs:     []*Job{{Status: "completed"}, {Status: "completed"}},
+			wantDone: false,
 		},
 		{
 			name: "wait-all: one unfinished job keeps polling even if another failed",
@@ -540,4 +542,39 @@ func TestCopyConclusionCounts(t *testing.T) {
 	copied["success"] = 99
 	assert.Equal(t, 2, source["success"], "the copy must not alias the source")
 	assert.NotNil(t, copyConclusionCounts(nil))
+}
+
+func TestWaitForRunAttemptDoesNotAcceptPreviousAttempt(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/1", jsonHandler(`{"id":1,"run_attempt":1,"status":"completed","conclusion":"success"}`))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	result, err := newMuxClient(t, mux).WaitForRunAttempt(ctx, 1, 1, 2, false)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, "cancelled", result.Status)
+}
+
+func TestWaitForRunAttemptReportsSuperseded(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/1", jsonHandler(`{"id":1,"run_attempt":3,"status":"completed","conclusion":"success"}`))
+	result, err := newMuxClient(t, mux).WaitForRunAttempt(context.Background(), 1, 1, 2, false)
+	require.NoError(t, err)
+	assert.Equal(t, "superseded", result.Status)
+	assert.Equal(t, 3, result.RunAttempt)
+	assert.Equal(t, 1, result.PollCount)
+	assert.Empty(t, result.Conclusion)
+}
+
+func TestManageRunReceiptPinsNextAttempt(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/actions/runs/1", jsonHandler(`{"id":1,"run_attempt":2,"status":"completed","conclusion":"failure"}`))
+	mux.HandleFunc("/repos/owner/repo/actions/runs/1/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusCreated) })
+	result, err := newMuxClient(t, mux).ManageRun(context.Background(), 1, ManageRunActionRerunFailed)
+	require.NoError(t, err)
+	assert.True(t, result.Accepted)
+	assert.Equal(t, 2, result.ObservedAttempt)
+	assert.Equal(t, 3, result.ExpectedAttempt)
 }

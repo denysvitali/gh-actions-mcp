@@ -96,3 +96,23 @@ func TestRetryTransportHonorsRetryAfter(t *testing.T) {
 	assert.Equal(t, int64(2000000000), stats.LastRateLimitReset)
 	assert.Positive(t, stats.TotalRequestTime)
 }
+
+func TestRetryDoesNotShortenServerDeadline(t *testing.T) {
+	calls := 0
+	transport := NewRetryTransport(roundTripperFunc(func(req *http.Request) *http.Response {
+		calls++
+		return &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": []string{"120"}}, Body: io.NopCloser(strings.NewReader("limited")), Request: req}
+	}), 3)
+	transport.sleep = func(context.Context, time.Duration) error {
+		t.Fatal("must not sleep or retry earlier than server allows")
+		return nil
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.test/resource", nil)
+	require.NoError(t, err)
+	resp, err := transport.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, 429, resp.StatusCode)
+	require.Equal(t, 1, calls)
+	require.Equal(t, "120", resp.Header.Get("Retry-After"))
+}

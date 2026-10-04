@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/go-github/v89/github"
@@ -110,7 +111,7 @@ func (c *Client) GetWorkflowRuns(ctx context.Context, workflowID int64, branch s
 
 func (c *Client) CancelWorkflowRun(ctx context.Context, runID int64) error {
 	_, err := c.gh.Actions.CancelWorkflowRunByID(ctx, c.owner, c.repo, runID)
-	if err != nil {
+	if err != nil && !isAccepted(err) {
 		return fmt.Errorf("failed to cancel workflow run %d: %w", runID, err)
 	}
 	return nil
@@ -228,21 +229,13 @@ func (c *Client) ListRepositoryWorkflowRunsPage(ctx context.Context, opts *ListR
 
 // GetWorkflowJobs retrieves jobs for a workflow run
 func (c *Client) GetWorkflowJobs(ctx context.Context, runID int64, filter string, attemptNumber int) ([]*Job, error) {
-	opts := &github.ListWorkflowJobsOptions{
-		ListOptions: github.ListOptions{PerPage: c.perPageLimit},
-	}
-
-	if filter != "" {
-		opts.Filter = filter
-	}
-
-	jobs, _, err := c.gh.Actions.ListWorkflowJobs(ctx, c.owner, c.repo, runID, opts)
+	allJobs, err := c.workflowJobPages(ctx, runID, filter, attemptNumber)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list jobs for run %d: %w", runID, err)
+		return nil, err
 	}
 
-	result := make([]*Job, 0, len(jobs.Jobs))
-	for _, job := range jobs.Jobs {
+	result := make([]*Job, 0, len(allJobs))
+	for _, job := range allJobs {
 		// Filter by attempt number if specified
 		if attemptNumber > 0 && job.GetRunAttempt() != int64(attemptNumber) {
 			continue
@@ -278,9 +271,51 @@ func (c *Client) GetWorkflowJobs(ctx context.Context, runID int64, filter string
 			RunnerGroup:     job.GetRunnerGroupName(),
 			Labels:          labels,
 			WorkflowRunID:   job.GetRunID(),
+			RunAttempt:      job.GetRunAttempt(),
 			Steps:           steps,
 		})
 	}
 
 	return result, nil
 }
+
+func (c *Client) workflowJobPages(ctx context.Context, runID int64, filter string, attemptNumber int) ([]*github.WorkflowJob, error) {
+	opts := &github.ListWorkflowJobsOptions{
+		ListOptions: github.ListOptions{PerPage: c.perPageLimit},
+	}
+
+	if filter != "" {
+		opts.Filter = filter
+	}
+
+	var allJobs []*github.WorkflowJob
+	for {
+		var jobs *github.Jobs
+		var response *github.Response
+		var err error
+		if attemptNumber > 0 {
+			jobs, response, err = c.gh.Actions.ListWorkflowJobsAttempt(ctx, c.owner, c.repo, runID, int64(attemptNumber), &opts.ListOptions)
+		} else {
+			jobs, response, err = c.gh.Actions.ListWorkflowJobs(ctx, c.owner, c.repo, runID, opts)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to list jobs for run %d: %w", runID, err)
+		}
+		allJobs = append(allJobs, jobs.Jobs...)
+		if response == nil || response.NextPage == 0 {
+			if len(allJobs) < jobs.GetTotalCount() {
+				return nil, fmt.Errorf("workflow job listing incomplete: received %d of %d", len(allJobs), jobs.GetTotalCount())
+			}
+			break
+		}
+		if response.NextPage <= opts.Page {
+			return nil, fmt.Errorf("workflow job pagination did not advance")
+		}
+		opts.Page = response.NextPage
+	}
+
+	return allJobs, nil
+}
+
+// isAccepted recognizes GitHub asynchronous mutation acceptance.
+func isAccepted(err error) bool { var accepted *github.AcceptedError; return errors.As(err, &accepted) }

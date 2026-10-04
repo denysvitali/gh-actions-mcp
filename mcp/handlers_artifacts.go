@@ -18,21 +18,17 @@ const defaultMaxArtifactFileSize = 1024 * 1024
 
 // getArtifactTyped answers get_artifact, streaming contents without writing to
 // disk.
-func (s *MCPServer) getArtifactTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, input artifactInput) (*sdkmcp.CallToolResult, github.ArtifactContent, error) {
-	var output github.ArtifactContent
+func (s *MCPServer) getArtifactTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, input artifactInput) (*sdkmcp.CallToolResult, artifactEvidence, error) {
+	var output artifactEvidence
 	client, owner, repo, err := s.clientFromInput(input.repoInput)
 	if err != nil {
 		return nil, output, err
 	}
-	maxSize := input.MaxFileSize
-	if maxSize <= 0 {
-		maxSize = defaultMaxArtifactFileSize
-	}
-	content, err := client.GetArtifactContent(ctx, input.ArtifactID, input.FilePattern, maxSize)
+	output, err = s.readArtifactEvidence(ctx, client, owner, repo, input)
 	if err != nil {
 		return nil, output, fmt.Errorf("%s", s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get artifact %d", input.ArtifactID), owner, repo))
 	}
-	return nil, *content, nil
+	return nil, output, nil
 }
 
 // downloadArtifactTyped answers download_artifact. Destinations are resolved

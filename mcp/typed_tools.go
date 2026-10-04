@@ -18,9 +18,8 @@ const defaultPerPageLimit = 50
 //
 // Resolution order: explicit arguments win over the configured repository, and an
 // "owner/repo" string in the repo argument wins over both, so a caller can pass
-// a single slug. The returned client is a fresh one — the server's own client is
-// only used for the configured repository — which keeps a per-call override from
-// leaking into later calls.
+// a single slug. A bounded server-owned pool reuses clients and their ETag
+// and rate-limit state without sharing credentials across server instances.
 func (s *MCPServer) clientFromInput(input repoInput) (*github.Client, string, string, error) {
 	owner := strings.TrimSpace(input.Owner)
 	repo := strings.TrimSpace(input.Repo)
@@ -39,6 +38,12 @@ func (s *MCPServer) clientFromInput(input repoInput) (*github.Client, string, st
 	if owner == "" || repo == "" {
 		return nil, "", "", fmt.Errorf("repository owner/repo not set. Provide owner and repo arguments")
 	}
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	key := owner + "/" + repo
+	if client := s.clients[key]; client != nil {
+		return client, owner, repo, nil
+	}
 	perPage := s.config.PerPageLimit
 	if perPage <= 0 {
 		perPage = defaultPerPageLimit
@@ -48,6 +53,12 @@ func (s *MCPServer) clientFromInput(input repoInput) (*github.Client, string, st
 		APIBaseURL: s.config.APIBaseURL, UploadURL: s.config.UploadURL, RetryMax: s.config.RetryMax,
 		AuthUsername: s.config.AuthUsername,
 	})
+	if err == nil {
+		if s.clients == nil || len(s.clients) >= 32 {
+			s.clients = make(map[string]*github.Client)
+		}
+		s.clients[key] = client
+	}
 	return client, owner, repo, err
 }
 

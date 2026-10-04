@@ -105,7 +105,7 @@ func TestBuildDiagnosisSummary(t *testing.T) {
 		summary := client.buildDiagnosisSummary(d)
 		assert.Contains(t, summary, "2 failed job(s)")
 		assert.Contains(t, summary, "Build, Test")
-		assert.Contains(t, summary, "3 error line(s)")
+		assert.Contains(t, summary, "3 evidence line(s)")
 	})
 
 	t.Run("with flakiness info", func(t *testing.T) {
@@ -339,6 +339,8 @@ func TestDiagnoseFailure_InProgressRun(t *testing.T) {
 		}`))
 	})
 
+	mux.HandleFunc("/repos/test-owner/test-repo/actions/runs/100/jobs", jsonHandler(`{"jobs":[]}`))
+
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -382,7 +384,7 @@ func TestExtractErrorLines(t *testing.T) {
 
 		lines := client.extractErrorLines(context.Background(), 0, 10, 10)
 		assert.Equal(t, []string{
-			"##[error]first failure",
+			"##[error]first failure", "plain progress line", "--- FAIL: TestSomething", "panic: runtime error",
 		}, lines)
 
 		capped := client.extractErrorLines(context.Background(), 0, 10, 1)
@@ -469,7 +471,7 @@ func TestCheckFlakiness(t *testing.T) {
 		assert.Equal(t, 0, info.RecentRuns)
 	})
 
-	t.Run("same job failing twice alongside a success is a likely flake", func(t *testing.T) {
+	t.Run("same job recurrence across unknown commits is not a flake verdict", func(t *testing.T) {
 		t.Parallel()
 
 		client := newClient(t, `{"total_count":4,"workflow_runs":[
@@ -483,14 +485,14 @@ func TestCheckFlakiness(t *testing.T) {
 		})
 
 		info := client.checkFlakiness(context.Background(), focus, failedJobs)
-		assert.Equal(t, "likely_flake", info.Verdict)
+		assert.Equal(t, "unknown", info.Verdict)
 		assert.Equal(t, 3, info.RecentRuns)
 		assert.Equal(t, 2, info.RecentFailures)
 		assert.Equal(t, 1, info.RecentSuccesses)
 		assert.Equal(t, 2, info.SameFailureCount)
 	})
 
-	t.Run("failures with no successes is a likely regression", func(t *testing.T) {
+	t.Run("history without commit evidence remains uncertain", func(t *testing.T) {
 		t.Parallel()
 
 		client := newClient(t, `{"total_count":2,"workflow_runs":[
@@ -499,7 +501,7 @@ func TestCheckFlakiness(t *testing.T) {
 		]}`, map[string]string{"/repos/owner/repo/actions/runs/2/jobs": buildFailed})
 
 		info := client.checkFlakiness(context.Background(), focus, failedJobs)
-		assert.Equal(t, "likely_regression", info.Verdict)
+		assert.Equal(t, "unknown", info.Verdict)
 	})
 
 	t.Run("only successes in history is a first failure", func(t *testing.T) {
@@ -553,7 +555,7 @@ func TestCheckFlakiness(t *testing.T) {
 
 		info := client.checkFlakiness(context.Background(), focus, failedJobs)
 		assert.Equal(t, 0, info.SameFailureCount)
-		assert.Equal(t, "likely_regression", info.Verdict)
+		assert.Equal(t, "unknown", info.Verdict)
 	})
 }
 
@@ -641,6 +643,7 @@ func TestCollectErrorLines_PrefersAnnotationsAndSkipsScriptSource(t *testing.T) 
 		assert.Equal(t, []string{
 			"##[error]Persistent no-signal during HIL soak",
 			"##[error]Process completed with exit code 1.",
+			"error: cannot find module",
 		}, got)
 	})
 

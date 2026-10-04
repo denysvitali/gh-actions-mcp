@@ -107,13 +107,15 @@ func NewClientWithOptions(opts ClientOptions) (*Client, error) { //nolint:funlen
 		hc = basic.Client()
 	} else {
 		hc = &http.Client{
-			Timeout:   30 * time.Second,
 			Transport: cache,
 		}
 		if opts.Token != "" {
 			clientOpts = append(clientOpts, github.WithAuthToken(opts.Token))
 		}
 	}
+	// Keep the deadline in the transport so SDK error-body replacement cannot
+	// orphan http.Client.Timeout's cancellation goroutine on Go 1.26.
+	hc.Transport = &deadlineTransport{base: hc.Transport, timeout: 30 * time.Second}
 	clientOpts = append(clientOpts, github.WithHTTPClient(hc))
 	if opts.APIBaseURL != "" { //nolint:nestif // URL normalization and optional upload URL validation belong together.
 		// Use WithURLs rather than WithEnterpriseURLs; the latter auto-

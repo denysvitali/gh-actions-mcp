@@ -13,6 +13,7 @@ import (
 func minimalRun(run *github.WorkflowRun) github.WorkflowRunMinimal {
 	return github.WorkflowRunMinimal{
 		ID:              run.ID,
+		RunAttempt:      run.RunAttempt,
 		Name:            run.Name,
 		Status:          run.Status,
 		Conclusion:      run.Conclusion,
@@ -34,12 +35,16 @@ func compactRun(run *github.WorkflowRun) *github.WorkflowRunCompact {
 	}
 }
 
-// fullRun is the complete projection. CompletedAt is deliberately UpdatedAt: the
-// Actions API exposes no separate completion timestamp on a run, and for a
-// finished run its last update is when it finished.
+// fullRun is the complete projection. CompletedAt uses UpdatedAt only for
+// completed runs; an active run has no observed completion timestamp.
 func fullRun(run *github.WorkflowRun) *github.WorkflowRunFull {
+	completedAt := ""
+	if run.Status == "completed" {
+		completedAt = run.UpdatedAt
+	}
 	return &github.WorkflowRunFull{
 		ID:              run.ID,
+		RunAttempt:      run.RunAttempt,
 		Name:            run.Name,
 		Status:          run.Status,
 		Conclusion:      run.Conclusion,
@@ -53,7 +58,7 @@ func fullRun(run *github.WorkflowRun) *github.WorkflowRunFull {
 		WorkflowID:      run.WorkflowID,
 		HeadSHA:         run.HeadSHA,
 		StartedAt:       run.StartedAt,
-		CompletedAt:     run.UpdatedAt,
+		CompletedAt:     completedAt,
 		DurationSeconds: run.DurationSeconds,
 	}
 }

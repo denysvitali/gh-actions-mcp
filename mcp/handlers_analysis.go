@@ -65,7 +65,9 @@ func (s *MCPServer) getCheckStatusTyped(ctx context.Context, _ *sdkmcp.CallToolR
 		result, _ := jsonResult(status)
 		return result, nil, nil
 	}
-	return textResult(formatWorkflowStatusSummary(ref, status, filter)), nil, nil
+	result := textResult(formatWorkflowStatusSummary(status.SHA, status, filter))
+	result.StructuredContent = status
+	return result, nil, nil
 }
 
 // resolveCheckRef falls back to the local HEAD commit when no ref was given.
@@ -102,7 +104,7 @@ func (s *MCPServer) diagnoseFailureTyped(ctx context.Context, _ *sdkmcp.CallTool
 	if input.RunID != nil {
 		runID = *input.RunID
 	} else {
-		runID, err = s.latestFailedRunID(ctx, client, owner, repo)
+		runID, err = s.failedRunForRef(ctx, client, owner, repo, input.Ref)
 		if err != nil {
 			return nil, output, err
 		}
@@ -114,20 +116,25 @@ func (s *MCPServer) diagnoseFailureTyped(ctx context.Context, _ *sdkmcp.CallTool
 	return nil, *diagnosis, nil
 }
 
-// latestFailedRunID finds the newest completed-and-failed run to diagnose. It
-// restricts the search to the current local branch only when the call targets the
-// configured repository, for the same reason as resolveCheckRef.
-func (s *MCPServer) latestFailedRunID(ctx context.Context, client *github.Client, owner, repo string) (int64, error) {
-	branch := ""
-	if owner == s.config.RepoOwner && repo == s.config.RepoName {
-		branch, _ = github.GetCurrentBranch()
+// failedRunForRef prevents historical failures on another commit from being diagnosed.
+func (s *MCPServer) failedRunForRef(ctx context.Context, client *github.Client, owner, repo, rawRef string) (int64, error) {
+	ref, err := s.resolveCheckRef(rawRef, owner, repo)
+	if err != nil {
+		return 0, err
 	}
-	runs, listErr := client.ListRepositoryWorkflowRunsWithOptions(ctx, &github.ListRunsOptions{Per_page: 5, Status: "completed", Conclusion: "failure", Branch: branch})
-	if listErr != nil {
-		return 0, fmt.Errorf("%s", s.formatAuthErrorForRepo(listErr, "failed to find failed runs", owner, repo))
+	checks, err := client.GetCheckRunsForRef(ctx, ref, nil)
+	if err != nil {
+		return 0, err
 	}
-	if len(runs) == 0 {
-		return 0, fmt.Errorf("no failed runs found")
+	for _, run := range checks.CheckRuns {
+		if run.Conclusion == "failure" || run.Conclusion == "timed_out" {
+			return run.ID, nil
+		}
 	}
-	return runs[0].ID, nil
+	for _, run := range checks.CheckRuns {
+		if run.Status != "completed" {
+			return run.ID, nil
+		}
+	}
+	return 0, fmt.Errorf("no failed or active workflows found for commit %s", checks.SHA)
 }

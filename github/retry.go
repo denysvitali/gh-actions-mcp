@@ -66,7 +66,7 @@ func NewRetryTransport(base http.RoundTripper, maxRetries int) *RetryTransport {
 	return transport
 }
 
-func (t *RetryTransport) RoundTrip(request *http.Request) (*http.Response, error) { //nolint:gocognit // Retry state is deliberately visible in one bounded loop.
+func (t *RetryTransport) RoundTrip(request *http.Request) (*http.Response, error) { //nolint:gocognit,gocyclo // Retry state is deliberately visible in one bounded loop.
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		return t.base.RoundTrip(request)
 	}
@@ -94,6 +94,9 @@ func (t *RetryTransport) RoundTrip(request *http.Request) (*http.Response, error
 		}
 
 		delay, explicit := retryDelay(response, t.baseDelay, attempt)
+		if !retryFitsBudget(request, delay, explicit) {
+			return response, nil
+		}
 		if !explicit {
 			delay = t.jitter(delay)
 		}
@@ -173,15 +176,15 @@ func retryableResponse(response *http.Response) bool {
 func retryDelay(response *http.Response, base time.Duration, attempt int) (time.Duration, bool) {
 	if value := strings.TrimSpace(response.Header.Get("Retry-After")); value != "" {
 		if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-			return min(time.Duration(seconds)*time.Second, maxRetryDelay), true
+			return time.Duration(min(seconds, 86400)) * time.Second, true
 		}
 		if deadline, err := http.ParseTime(value); err == nil {
-			return min(max(time.Until(deadline), 0), maxRetryDelay), true
+			return max(time.Until(deadline), 0), true
 		}
 	}
 	if value := response.Header.Get("X-RateLimit-Reset"); value != "" {
 		if unix, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return min(max(time.Until(time.Unix(unix, 0)), 0), maxRetryDelay), true
+			return max(time.Until(time.Unix(unix, 0)), 0), true
 		}
 	}
 	return retryBackoff(base, attempt), false
@@ -208,4 +211,13 @@ func sleepContext(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// retryFitsBudget never shortens a server-specified delay to fit our budget.
+func retryFitsBudget(req *http.Request, delay time.Duration, explicit bool) bool {
+	if explicit && delay > maxRetryDelay {
+		return false
+	}
+	deadline, ok := req.Context().Deadline()
+	return !ok || time.Until(deadline) >= delay
 }

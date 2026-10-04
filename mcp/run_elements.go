@@ -190,23 +190,21 @@ func (s *MCPServer) runElementArtifactContent(ctx context.Context, req runElemen
 	if req.input.ArtifactID == nil {
 		return nil, nil, fmt.Errorf("artifact_id is required for element=artifact_content")
 	}
-	maxSize := req.input.MaxFileSize
-	if maxSize <= 0 {
-		maxSize = 1024 * 1024
-	}
-	content, err := req.client.GetArtifactContent(ctx, *req.input.ArtifactID, req.input.FilePattern, maxSize)
+	content, err := s.readArtifactEvidence(ctx, req.client, req.owner, req.repo, artifactInput{ArtifactID: *req.input.ArtifactID, FilePattern: req.input.FilePattern, MaxFileSize: req.input.MaxFileSize, evidenceInput: req.input.evidenceInput})
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s", s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get artifact content %d", *req.input.ArtifactID), req.owner, req.repo))
+		return nil, nil, err
 	}
-	result, _ := jsonResultPretty(content)
+	result, _ := jsonResult(content)
 	return result, nil, nil
 }
 
-// runElementLogs returns log text. When the caller applied no limiting argument
-// at all the output is auto-truncated to the configured tail length, so that an
-// unqualified request cannot flood the context window.
+// runElementLogs returns bounded log text and structured continuation metadata.
+// Budgets apply after every filter, including broad searches and sections.
 func (s *MCPServer) runElementLogs(ctx context.Context, req runElementRequest) (*sdkmcp.CallToolResult, any, error) {
 	input := req.input
+	if _, _, err := evidenceBudgets(input.evidenceInput); err != nil {
+		return nil, nil, err
+	}
 	if input.Search != "" && input.SearchRegex != "" {
 		return nil, nil, fmt.Errorf("search and search_regex are mutually exclusive")
 	}
@@ -216,8 +214,8 @@ func (s *MCPServer) runElementLogs(ctx context.Context, req runElementRequest) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s", s.formatAuthErrorForRepo(err, fmt.Sprintf("failed to get logs for run %d", input.RunID), req.owner, req.repo))
 	}
-	limited := view.head > 0 || view.tail > 0 || input.Search != "" || input.SearchRegex != "" || input.Section != ""
-	return truncateLogResult(logs, s.getLogLines(), limited), nil, nil
+	result, err := s.boundedLogResult(logs, req)
+	return result, nil, err
 }
 
 // logView is the caller's line window over a log stream. Zero means "not

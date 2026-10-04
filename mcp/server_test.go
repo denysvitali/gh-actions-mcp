@@ -74,7 +74,7 @@ func TestOfficialSDKRoundTrip(t *testing.T) {
 
 	tools, err := clientSession.ListTools(ctx, nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 12)
+	assert.Len(t, tools.Tools, 14)
 	toolByName := make(map[string]*mcp.Tool, len(tools.Tools))
 	for _, tool := range tools.Tools {
 		toolByName[tool.Name] = tool

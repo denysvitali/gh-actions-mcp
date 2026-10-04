@@ -8,11 +8,17 @@ import (
 
 // WaitRunResult reports how a wait on a workflow run ended.
 //
-// Status is "completed", "timed_out" or "cancelled". TimeoutReached is true only
+// Status is "completed", "failure_observed", "superseded", "timed_out" or
+// "cancelled". TimeoutReached is true only
 // for "timed_out". Conclusion is GitHub's run conclusion, except in fail-fast
 // mode where it may be the conclusion of the first failing job or step.
 type WaitRunResult struct {
-	Status          string  `json:"status"`               // "completed", "timed_out"
+	RunID           int64   `json:"run_id"`
+	HeadSHA         string  `json:"head_sha,omitempty"`
+	RunAttempt      int     `json:"run_attempt"`
+	RunStatus       string  `json:"run_status,omitempty"`
+	StopReason      string  `json:"stop_reason,omitempty"`
+	Status          string  `json:"status"`               // Wait outcome, separate from RunStatus.
 	Conclusion      string  `json:"conclusion,omitempty"` // "success", "failure", etc.
 	DurationSeconds float64 `json:"duration"`
 	RunURL          string  `json:"run_url"`
@@ -26,6 +32,7 @@ type WaitRunResult struct {
 // OverallConclusion is the aggregate state ("success", "failure", "pending",
 // "neutral") or "timed_out"/"cancelled" when the wait itself ended early.
 type WaitCommitChecksResult struct {
+	SHA                string         `json:"sha,omitempty"`
 	OverallConclusion  string         `json:"overall_conclusion"` // "success", "failure", "pending", "neutral"
 	ChecksTotal        int            `json:"checks_total"`
 	ChecksByConclusion map[string]int `json:"checks_by_conclusion"`
@@ -45,10 +52,13 @@ const (
 // ManageRunResult reports the outcome of a ManageRun call. Status is "success"
 // or "failed"; a failed API call is reported here rather than as an error.
 type ManageRunResult struct {
-	RunID   int64           `json:"run_id"`
-	Action  ManageRunAction `json:"action"`
-	Status  string          `json:"status"` // "success", "failed"
-	Message string          `json:"message,omitempty"`
+	Accepted        bool            `json:"accepted"`
+	ObservedAttempt int             `json:"observed_attempt,omitempty"`
+	ExpectedAttempt int             `json:"expected_attempt,omitempty"`
+	RunID           int64           `json:"run_id"`
+	Action          ManageRunAction `json:"action"`
+	Status          string          `json:"status"` // "success", "failed"
+	Message         string          `json:"message,omitempty"`
 }
 
 // WaitResult is the result of WaitForWorkflowRun. Run holds the last observed
@@ -149,7 +159,7 @@ func (c *Client) WaitForWorkflowRun(ctx context.Context, runID int64, pollInterv
 // timeoutMinutes of zero or less selects 30 minutes. See waitForRun for the
 // result and error contract.
 func (c *Client) WaitForRun(ctx context.Context, runID int64, timeoutMinutes int) (*WaitRunResult, error) {
-	return c.waitForRun(ctx, runID, timeoutMinutes, waitModeFailFast)
+	return c.waitForRun(ctx, runID, timeoutMinutes, waitModeFailFast, 0)
 }
 
 // WaitForAll waits for every job in a workflow run to reach a terminal state.
@@ -158,7 +168,18 @@ func (c *Client) WaitForRun(ctx context.Context, runID int64, timeoutMinutes int
 // timeoutMinutes of zero or less selects 30 minutes. See waitForRun for the
 // result and error contract.
 func (c *Client) WaitForAll(ctx context.Context, runID int64, timeoutMinutes int) (*WaitRunResult, error) {
-	return c.waitForRun(ctx, runID, timeoutMinutes, waitModeAllJobs)
+	return c.waitForRun(ctx, runID, timeoutMinutes, waitModeAllJobs, 0)
+}
+
+// WaitForRunAttempt waits for a specific attempt to become visible before
+// evaluating its state. A newer attempt is reported as superseded, never as the
+// requested attempt's successful completion.
+func (c *Client) WaitForRunAttempt(ctx context.Context, runID int64, timeoutMinutes, expectedAttempt int, allJobs bool) (*WaitRunResult, error) {
+	mode := waitModeFailFast
+	if allJobs {
+		mode = waitModeAllJobs
+	}
+	return c.waitForRun(ctx, runID, timeoutMinutes, mode, expectedAttempt)
 }
 
 // waitForRun polls run runID every 15 seconds until mode says it is finished.
@@ -169,7 +190,7 @@ func (c *Client) WaitForAll(ctx context.Context, runID int64, timeoutMinutes int
 //     state could still be read, non-nil otherwise
 //   - ctx cancelled   → Status "cancelled" plus ctx.Err()
 //   - API failure     → nil result plus the wrapped error
-func (c *Client) waitForRun(ctx context.Context, runID int64, timeoutMinutes int, mode waitMode) (*WaitRunResult, error) { //nolint:nestif // Poll decisions remain together to preserve timing semantics.
+func (c *Client) waitForRun(ctx context.Context, runID int64, timeoutMinutes int, mode waitMode, expectedAttempt int) (*WaitRunResult, error) { //nolint:nestif // Poll decisions remain together to preserve timing semantics.
 	const defaultTimeoutMinutes = 30
 	const pollIntervalSeconds = 15
 
@@ -181,6 +202,7 @@ func (c *Client) waitForRun(ctx context.Context, runID int64, timeoutMinutes int
 	maxDuration := time.Duration(timeoutMinutes) * time.Minute
 	startTime := time.Now()
 
+	pollCount := 0
 	log.Infof("Starting to wait for workflow run %d (timeout: %dm)", runID, timeoutMinutes)
 
 	for {
@@ -197,15 +219,14 @@ func (c *Client) waitForRun(ctx context.Context, runID int64, timeoutMinutes int
 			return nil, fmt.Errorf("failed to get workflow run %d: %w", runID, err)
 		}
 
-		jobs, err := c.jobsForWaitDecision(ctx, runID, mode, run)
+		pollCount++
+		result, err := c.pollRunDecision(ctx, run, mode, expectedAttempt, startTime)
 		if err != nil {
 			return nil, err
 		}
-
-		if outcome := nextWaitAction(mode, run, jobs); outcome.done {
-			elapsed := time.Since(startTime)
-			logWaitOutcome(runID, outcome, elapsed)
-			return completedRunResult(run, outcome.conclusion, elapsed), nil
+		if result != nil {
+			result.PollCount = pollCount
+			return result, nil
 		}
 
 		// Silent between polls: callers stream this over MCP.
@@ -215,6 +236,32 @@ func (c *Client) waitForRun(ctx context.Context, runID int64, timeoutMinutes int
 	}
 }
 
+func (c *Client) pollRunDecision(ctx context.Context, run *WorkflowRun, mode waitMode, expectedAttempt int, startTime time.Time) (*WaitRunResult, error) {
+	if expectedAttempt > 0 && run.RunAttempt < expectedAttempt {
+		return nil, nil
+	}
+	if expectedAttempt > 0 && run.RunAttempt > expectedAttempt {
+		result := completedRunResult(run, "", time.Since(startTime))
+		result.Status, result.StopReason, result.CompletedAt = "superseded", "newer_attempt", ""
+		return result, nil
+	}
+	jobs, err := c.jobsForWaitDecision(ctx, run.ID, mode, run)
+	if err != nil {
+		return nil, err
+	}
+	outcome := nextWaitAction(mode, run, jobs)
+	if !outcome.done {
+		return nil, nil
+	}
+	elapsed := time.Since(startTime)
+	logWaitOutcome(run.ID, outcome, elapsed)
+	result := completedRunResult(run, outcome.conclusion, elapsed)
+	if outcome.reason == waitReasonJobFailed {
+		result.Status, result.StopReason, result.CompletedAt = "failure_observed", "failure_observed", ""
+	}
+	return result, nil
+}
+
 // jobsForWaitDecision fetches the jobs nextWaitAction needs, and only those:
 // fail-fast mode skips the call once the run itself is completed, because the run
 // conclusion already settles the question.
@@ -222,7 +269,7 @@ func (c *Client) jobsForWaitDecision(ctx context.Context, runID int64, mode wait
 	if mode == waitModeFailFast && run.Status == "completed" {
 		return nil, nil
 	}
-	jobs, err := c.GetWorkflowJobs(ctx, runID, "", 0)
+	jobs, err := c.GetWorkflowJobs(ctx, runID, "latest", run.RunAttempt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get jobs for run %d: %w", runID, err)
 	}
@@ -235,15 +282,10 @@ func (c *Client) jobsForWaitDecision(ctx context.Context, runID int64, mode wait
 //
 // jobs may be nil when jobsForWaitDecision skipped the call.
 func nextWaitAction(mode waitMode, run *WorkflowRun, jobs []*Job) waitOutcome {
-	if mode == waitModeAllJobs { //nolint:nestif // This is the complete decision table for all-jobs mode.
-		if len(jobs) > 0 {
-			if allJobsCompleted(jobs) {
-				return waitOutcome{done: true, conclusion: run.Conclusion, reason: waitReasonAllJobsDone}
-			}
-			return waitOutcome{}
-		}
-		// No jobs reported yet: the run status is the only signal available.
-		if run.Status == "completed" {
+	if mode == waitModeAllJobs {
+		// A complete page of currently known jobs is not proof that the run has
+		// finished creating jobs (matrix expansion and dependent jobs may be later).
+		if run.Status == "completed" && allJobsCompleted(jobs) {
 			return waitOutcome{done: true, conclusion: run.Conclusion, reason: waitReasonAllJobsDone}
 		}
 		return waitOutcome{}
@@ -312,14 +354,22 @@ func logWaitOutcome(runID int64, outcome waitOutcome, elapsed time.Duration) {
 // completedRunResult builds the successful result for a finished wait.
 func completedRunResult(run *WorkflowRun, conclusion string, elapsed time.Duration) *WaitRunResult {
 	return &WaitRunResult{
-		Status:          "completed",
+		Status: "completed",
+		RunID:  run.ID, HeadSHA: run.HeadSHA, RunAttempt: run.RunAttempt, RunStatus: run.Status, StopReason: "run_completed",
 		Conclusion:      conclusion,
 		DurationSeconds: elapsed.Seconds(),
 		RunURL:          run.URL,
-		StartedAt:       run.CreatedAt,
-		CompletedAt:     run.UpdatedAt,
+		StartedAt:       run.StartedAt,
+		CompletedAt:     runCompletionTime(run),
 		TimeoutReached:  false,
 	}
+}
+
+func runCompletionTime(run *WorkflowRun) string {
+	if run.Status != "completed" {
+		return ""
+	}
+	return run.UpdatedAt
 }
 
 // cancelledRunResult builds the result returned alongside ctx.Err().
@@ -344,11 +394,12 @@ func (c *Client) timedOutRunResult(ctx context.Context, runID int64, timeoutMinu
 		}, fmt.Errorf("workflow run %d did not complete within %d minutes", runID, timeoutMinutes)
 	}
 	return &WaitRunResult{
-		Status:          "timed_out",
+		Status: "timed_out",
+		RunID:  run.ID, HeadSHA: run.HeadSHA, RunAttempt: run.RunAttempt, RunStatus: run.Status, StopReason: "deadline",
 		Conclusion:      run.Conclusion,
 		DurationSeconds: elapsed.Seconds(),
 		RunURL:          run.URL,
-		StartedAt:       run.CreatedAt,
+		StartedAt:       run.StartedAt,
 		TimeoutReached:  true,
 	}, nil
 }
@@ -367,13 +418,14 @@ func (c *Client) WaitForCommitChecks(ctx context.Context, ref string, timeoutMin
 	if timeoutMinutes <= 0 {
 		timeoutMinutes = defaultTimeoutMinutes
 	}
-	if ref == "" {
-		commit, err := GetLastCommit()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get current commit: %w", err)
-		}
-		ref = commit.SHA
+	if err := ctx.Err(); err != nil {
+		return cancelledChecksResult(time.Now()), err
 	}
+	sha, err := c.ResolveRef(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	ref = sha
 
 	pollDuration := time.Duration(pollIntervalSeconds) * time.Second
 	maxDuration := time.Duration(timeoutMinutes) * time.Minute
@@ -390,17 +442,18 @@ func (c *Client) WaitForCommitChecks(ctx context.Context, ref string, timeoutMin
 			return c.timedOutChecksResult(ctx, ref, timeoutMinutes, elapsed)
 		}
 
-		status, err := c.GetCheckRunsForRef(ctx, ref, &GetCheckRunsOptions{Filter: "all"})
+		status, err := c.GetCheckRunsForRef(ctx, ref, &GetCheckRunsOptions{Filter: "latest"})
 		if err != nil {
 			return nil, fmt.Errorf("failed to get check runs: %w", err)
 		}
 
 		// No checks registered yet is not "all done": keep polling.
-		if len(status.CheckRuns) > 0 && allChecksCompleted(status.CheckRuns) {
+		if len(status.CheckRuns) > 0 && allChecksCompleted(status.CheckRuns) && status.State != "pending" {
 			elapsed := time.Since(startTime)
 			log.Infof("All checks completed for ref %s: %s (duration: %.1fs)", ref, status.State, elapsed.Seconds())
 			return &WaitCommitChecksResult{
 				OverallConclusion:  status.State,
+				SHA:                ref,
 				ChecksTotal:        status.TotalCount,
 				ChecksByConclusion: copyConclusionCounts(status.ByConclusion),
 				DurationSeconds:    elapsed.Seconds(),
@@ -446,7 +499,7 @@ func cancelledChecksResult(startTime time.Time) *WaitCommitChecksResult {
 // timedOutChecksResult builds the result for an expired deadline, enriched with
 // one last check lookup when that still succeeds.
 func (c *Client) timedOutChecksResult(ctx context.Context, ref string, timeoutMinutes int, elapsed time.Duration) (*WaitCommitChecksResult, error) {
-	status, err := c.GetCheckRunsForRef(ctx, ref, &GetCheckRunsOptions{Filter: "all"})
+	status, err := c.GetCheckRunsForRef(ctx, ref, &GetCheckRunsOptions{Filter: "latest"})
 	if err != nil {
 		return &WaitCommitChecksResult{
 			OverallConclusion: "timed_out",
@@ -456,6 +509,7 @@ func (c *Client) timedOutChecksResult(ctx context.Context, ref string, timeoutMi
 	}
 	return &WaitCommitChecksResult{
 		OverallConclusion:  "timed_out",
+		SHA:                ref,
 		ChecksTotal:        status.TotalCount,
 		ChecksByConclusion: copyConclusionCounts(status.ByConclusion),
 		DurationSeconds:    elapsed.Seconds(),
@@ -465,19 +519,24 @@ func (c *Client) timedOutChecksResult(ctx context.Context, ref string, timeoutMi
 
 // ManageRun cancels, reruns, or reruns the failed jobs of a workflow run.
 //
-// It returns an error only for an unknown action; an API failure is reported as
-// a result with Status "failed" and the API error in Message. Note that GitHub
-// answers a successful cancellation with 202 Accepted, which the underlying
-// client surfaces as an error — see TestCancelWorkflowRun_202IsReportedAsAnError.
+// Mutation failures are reported with Status "failed". Rerun preflight errors
+// are returned before mutation. Accepted means queued by GitHub, not completed.
 func (c *Client) ManageRun(ctx context.Context, runID int64, action ManageRunAction) (*ManageRunResult, error) {
 	var err error
 	var message string
+	observedAttempt, expectedAttempt, err := c.rerunAttemptReceipt(ctx, runID, action)
+	if err != nil {
+		return nil, err
+	}
 
 	switch action {
 	case ManageRunActionCancel:
 		_, err = c.gh.Actions.CancelWorkflowRunByID(ctx, c.owner, c.repo, runID)
+		if isAccepted(err) {
+			err = nil
+		}
 		if err == nil {
-			message = fmt.Sprintf("Successfully cancelled workflow run %d", runID)
+			message = fmt.Sprintf("Cancellation accepted for workflow run %d", runID)
 		}
 	case ManageRunActionRerun:
 		_, err = c.gh.Actions.RerunWorkflowByID(ctx, c.owner, c.repo, runID)
@@ -504,9 +563,24 @@ func (c *Client) ManageRun(ctx context.Context, runID int64, action ManageRunAct
 	}
 
 	return &ManageRunResult{
-		RunID:   runID,
-		Action:  action,
-		Status:  "success",
+		RunID:    runID,
+		Action:   action,
+		Status:   "success",
+		Accepted: true, ObservedAttempt: observedAttempt, ExpectedAttempt: expectedAttempt,
 		Message: message,
 	}, nil
+}
+
+func (c *Client) rerunAttemptReceipt(ctx context.Context, runID int64, action ManageRunAction) (int, int, error) {
+	if action != ManageRunActionRerun && action != ManageRunActionRerunFailed {
+		return 0, 0, nil
+	}
+	run, err := c.GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to establish current run attempt: %w", err)
+	}
+	if run.RunAttempt <= 0 {
+		return 0, 0, fmt.Errorf("run %d did not report its current attempt", runID)
+	}
+	return run.RunAttempt, run.RunAttempt + 1, nil
 }

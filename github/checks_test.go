@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -19,15 +20,16 @@ func TestGetCheckRunsForRef_UsesWorkflowRunsNotChecksAPI(t *testing.T) {
 
 	checksEndpointCalled := false
 	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/"+owner+"/"+repo+"/commits/main", jsonHandler(`{"sha":"abcdef1234567890abcdef1234567890abcdef12"}`))
 	mux.HandleFunc("/repos/"+owner+"/"+repo+"/actions/runs", func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "main", r.URL.Query().Get("branch"))
+		assert.Equal(t, "abcdef1234567890abcdef1234567890abcdef12", r.URL.Query().Get("head_sha"))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{
 		  "total_count": 3,
 		  "workflow_runs": [
-		    {"id": 11, "name": "Build", "status": "completed", "conclusion": "failure", "run_number": 11, "html_url": "https://example.test/r/11"},
-		    {"id": 10, "name": "Build", "status": "completed", "conclusion": "success", "run_number": 10, "html_url": "https://example.test/r/10"},
-		    {"id": 12, "name": "Lint",  "status": "in_progress", "conclusion": null, "run_number": 5, "html_url": "https://example.test/r/12"}
+		    {"head_sha":"abcdef1234567890abcdef1234567890abcdef12", "id": 11, "name": "Build", "status": "completed", "conclusion": "failure", "run_number": 11, "html_url": "https://example.test/r/11"},
+		    {"head_sha":"abcdef1234567890abcdef1234567890abcdef12", "id": 10, "name": "Build", "status": "completed", "conclusion": "success", "run_number": 10, "html_url": "https://example.test/r/10"},
+		    {"head_sha":"abcdef1234567890abcdef1234567890abcdef12", "id": 12, "name": "Lint",  "status": "in_progress", "conclusion": null, "run_number": 5, "html_url": "https://example.test/r/12"}
 		  ]
 		}`))
 	})
@@ -129,14 +131,27 @@ func TestDetermineOverallState(t *testing.T) {
 			want: "success",
 		},
 		{
-			name: "only skipped or cancelled checks are neutral",
+			name: "only skipped or neutral checks are neutral",
 			runs: []*CheckRun{
 				{Status: "completed", Conclusion: "skipped"},
-				{Status: "completed", Conclusion: "cancelled"},
+				{Status: "completed", Conclusion: "neutral"},
 			},
 			want: "neutral",
 		},
 	}
+
+	tests = append(tests,
+		struct {
+			name string
+			runs []*CheckRun
+			want string
+		}{"cancelled does not become success", []*CheckRun{{Status: "completed", Conclusion: "success"}, {Status: "completed", Conclusion: "cancelled"}}, "failure"},
+		struct {
+			name string
+			runs []*CheckRun
+			want string
+		}{"unknown conclusion is not success", []*CheckRun{{Status: "completed", Conclusion: "success"}, {Status: "completed"}}, "pending"},
+	)
 
 	client := &Client{}
 	for _, tt := range tests {
@@ -151,17 +166,18 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 	t.Parallel()
 
 	const runsJSON = `{"total_count":5,"workflow_runs":[
-		{"id":1,"name":"CI","status":"completed","conclusion":"success","head_sha":"ABCDEF1234567890","run_number":1,"html_url":"https://example.com/1"},
-		{"id":2,"name":"CI","status":"completed","conclusion":"failure","head_sha":"abcdef1234567890","run_number":2,"html_url":"https://example.com/2"},
-		{"id":3,"name":"Lint","status":"in_progress","head_sha":"abcdef1234567890","run_number":1,"html_url":"https://example.com/3"},
+		{"id":1,"name":"CI","status":"completed","conclusion":"success","head_sha":"ABCDEF1234567890ABCDEF1234567890ABCDEF12","run_number":1,"html_url":"https://example.com/1"},
+		{"id":2,"name":"CI","status":"completed","conclusion":"failure","head_sha":"abcdef1234567890abcdef1234567890abcdef12","run_number":2,"html_url":"https://example.com/2"},
+		{"id":3,"name":"Lint","status":"in_progress","head_sha":"abcdef1234567890abcdef1234567890abcdef12","run_number":1,"html_url":"https://example.com/3"},
 		{"id":4,"name":"CI","status":"completed","conclusion":"success","head_sha":"9999999999999999","run_number":9,"html_url":"https://example.com/4"},
-		{"id":5,"name":"","status":"completed","conclusion":"success","head_sha":"abcdef1234567890","run_number":1,"html_url":"https://example.com/5"}
+		{"id":5,"name":"","status":"completed","conclusion":"success","head_sha":"abcdef1234567890abcdef1234567890abcdef12","run_number":1,"html_url":"https://example.com/5"}
 	]}`
 
 	newClient := func(t *testing.T) *Client {
 		t.Helper()
 
 		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/owner/repo/commits/ABCDEF1", jsonHandler(`{"sha":"abcdef1234567890abcdef1234567890abcdef12"}`))
 		mux.HandleFunc("/repos/owner/repo/actions/runs", jsonHandler(runsJSON))
 		return newMuxClient(t, mux)
 	}
@@ -169,7 +185,7 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 	t.Run("latest mode keeps only the highest run number per workflow name", func(t *testing.T) {
 		t.Parallel()
 
-		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890", nil)
+		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", nil)
 		require.NoError(t, err)
 
 		// Runs 1 and 2 share the name "CI"; only run 2 (higher run_number) survives.
@@ -181,13 +197,13 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 		assert.Equal(t, map[string]int64{"CI": 2, "Lint": 3, "": 5}, names)
 		assert.Equal(t, 3, status.TotalCount)
 		assert.Equal(t, "pending", status.State, "the in-progress Lint run keeps the overall state pending")
-		assert.Equal(t, "abcdef1234567890", status.SHA)
+		assert.Equal(t, "abcdef1234567890abcdef1234567890abcdef12", status.SHA)
 	})
 
 	t.Run("all mode keeps every matching run", func(t *testing.T) {
 		t.Parallel()
 
-		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890", &GetCheckRunsOptions{Filter: "all"})
+		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", &GetCheckRunsOptions{Filter: "all"})
 		require.NoError(t, err)
 		assert.Equal(t, 4, status.TotalCount)
 		assert.Equal(t, map[string]int{"success": 2, "failure": 1, "in_progress": 1}, status.ByConclusion)
@@ -201,28 +217,29 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 		assert.Equal(t, 4, status.TotalCount)
 	})
 
-	t.Run("a non-commit-looking ref is sent to GitHub as a branch filter", func(t *testing.T) {
+	t.Run("a branch ref resolves to immutable SHA before querying", func(t *testing.T) {
 		t.Parallel()
 
-		var gotBranch string
+		var gotSHA string
 		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/owner/repo/commits/main", jsonHandler(`{"sha":"abcdef1234567890abcdef1234567890abcdef12"}`))
 		mux.HandleFunc("/repos/owner/repo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
-			gotBranch = r.URL.Query().Get("branch")
+			gotSHA = r.URL.Query().Get("head_sha")
 			jsonHandler(runsJSON)(w, r)
 		})
 		client := newMuxClient(t, mux)
 
 		status, err := client.GetCheckRunsForRef(context.Background(), "main", &GetCheckRunsOptions{Filter: "all"})
 		require.NoError(t, err)
-		assert.Equal(t, "main", gotBranch)
-		// No client-side SHA filtering happens for a branch ref, so run 4 survives.
-		assert.Equal(t, 5, status.TotalCount)
+		assert.Equal(t, "abcdef1234567890abcdef1234567890abcdef12", gotSHA)
+		// The run from the previous branch commit is excluded.
+		assert.Equal(t, 4, status.TotalCount)
 	})
 
 	t.Run("check name filter", func(t *testing.T) {
 		t.Parallel()
 
-		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890", &GetCheckRunsOptions{CheckName: "CI", Filter: "all"})
+		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", &GetCheckRunsOptions{CheckName: "CI", Filter: "all"})
 		require.NoError(t, err)
 		require.Len(t, status.CheckRuns, 2)
 		ids := []int64{status.CheckRuns[0].ID, status.CheckRuns[1].ID}
@@ -233,7 +250,7 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 	t.Run("status filter", func(t *testing.T) {
 		t.Parallel()
 
-		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890", &GetCheckRunsOptions{Status: "in_progress", Filter: "all"})
+		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", &GetCheckRunsOptions{Status: "in_progress", Filter: "all"})
 		require.NoError(t, err)
 		require.Len(t, status.CheckRuns, 1)
 		assert.Equal(t, int64(3), status.CheckRuns[0].ID)
@@ -242,7 +259,7 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 	t.Run("every run is reported as the github-actions app", func(t *testing.T) {
 		t.Parallel()
 
-		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890", &GetCheckRunsOptions{Filter: "all"})
+		status, err := newClient(t).GetCheckRunsForRef(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", &GetCheckRunsOptions{Filter: "all"})
 		require.NoError(t, err)
 		for _, cr := range status.CheckRuns {
 			assert.Equal(t, "github-actions", cr.AppName)
@@ -257,8 +274,45 @@ func TestGetCheckRunsForRef_Filtering(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/runs", statusHandler(http.StatusForbidden))
 		client := newMuxClient(t, mux)
 
-		_, err := client.GetCheckRunsForRef(context.Background(), "abcdef1234567890", nil)
+		_, err := client.GetCheckRunsForRef(context.Background(), "abcdef1234567890abcdef1234567890abcdef12", nil)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to list workflow runs for ref abcdef1234567890")
+		assert.Contains(t, err.Error(), "failed to list workflow runs for ref abcdef1234567890abcdef1234567890abcdef12")
 	})
+}
+
+func TestExactChecksPaginationAndWorkflowIdentity(t *testing.T) {
+	t.Parallel()
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	mux := http.NewServeMux()
+	calls := 0
+	mux.HandleFunc("/repos/owner/repo/commits/release/v1", jsonHandler(`{"sha":"`+sha+`"}`))
+	mux.HandleFunc("/repos/owner/repo/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, sha, r.URL.Query().Get("head_sha"))
+		assert.Empty(t, r.URL.Query().Get("branch"))
+		if r.URL.Query().Get("page") == "" {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s/repos/owner/repo/actions/runs?page=2>; rel="next"`, r.Host))
+			jsonHandler(`{"total_count":3,"workflow_runs":[{"id":10,"workflow_id":1,"name":"CI","head_sha":"`+sha+`","status":"completed","conclusion":"failure","run_number":1,"run_attempt":1}]}`)(w, r)
+			return
+		}
+		jsonHandler(`{"total_count":3,"workflow_runs":[{"id":11,"workflow_id":1,"name":"Renamed CI","head_sha":"`+sha+`","status":"completed","conclusion":"success","run_number":2,"run_attempt":2},{"id":12,"workflow_id":2,"name":"Renamed CI","head_sha":"`+sha+`","status":"in_progress","run_number":1,"run_attempt":1}]}`)(w, r)
+	})
+	result, err := newMuxClient(t, mux).GetCheckRunsForRef(context.Background(), "release/v1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, sha, result.SHA)
+	require.Len(t, result.CheckRuns, 2)
+	assert.Equal(t, int64(11), result.CheckRuns[0].ID)
+	assert.Equal(t, int64(1), result.CheckRuns[0].WorkflowID)
+	assert.Equal(t, 2, result.CheckRuns[0].RunAttempt)
+	assert.Empty(t, result.CheckRuns[1].CompletedAt)
+	assert.Equal(t, "pending", result.State)
+}
+
+func TestResolveRefRejectsMalformedRemoteSHA(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/main", jsonHandler(`{"sha":"bad"}`))
+	_, err := newMuxClient(t, mux).ResolveRef(context.Background(), "main")
+	require.ErrorContains(t, err, "invalid commit SHA")
 }

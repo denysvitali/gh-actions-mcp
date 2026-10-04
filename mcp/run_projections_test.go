@@ -14,6 +14,7 @@ import (
 func sampleRun() *github.WorkflowRun {
 	return &github.WorkflowRun{
 		ID:              111,
+		RunAttempt:      2,
 		Name:            "CI",
 		Status:          "completed",
 		Conclusion:      "success",
@@ -43,17 +44,17 @@ func TestFormatRunsProjections(t *testing.T) {
 	}{
 		{
 			format: "minimal",
-			want:   `[{"id":111,"name":"CI","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z","duration":540}]`,
+			want:   `[{"id":111,"run_attempt":2,"name":"CI","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z","duration":540}]`,
 		},
 		{
 			format: "compact",
-			want: `[{"id":111,"name":"CI","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z","duration":540,` +
+			want: `[{"id":111,"run_attempt":2,"name":"CI","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z","duration":540,` +
 				`"branch":"main","sha":"abc123","event":"push","actor":"octocat","url":"https://github.com/o/r/actions/runs/111"}]`,
 		},
 		{
 			// The empty format falls back to compact, which is the schema default.
 			format: "",
-			want: `[{"id":111,"name":"CI","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z","duration":540,` +
+			want: `[{"id":111,"run_attempt":2,"name":"CI","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z","duration":540,` +
 				`"branch":"main","sha":"abc123","event":"push","actor":"octocat","url":"https://github.com/o/r/actions/runs/111"}]`,
 		},
 		{
@@ -62,7 +63,7 @@ func TestFormatRunsProjections(t *testing.T) {
 			format: "full",
 			want: `[{"id":111,"name":"CI","status":"completed","conclusion":"success","branch":"main","event":"push","actor":"octocat",` +
 				`"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:10:00Z","url":"https://github.com/o/r/actions/runs/111",` +
-				`"run_number":42,"workflow_id":777,"head_sha":"abc123","started_at":"2026-01-01T00:01:00Z",` +
+				`"run_number":42,"run_attempt":2,"workflow_id":777,"head_sha":"abc123","started_at":"2026-01-01T00:01:00Z",` +
 				`"completed_at":"2026-01-01T00:10:00Z","duration":540}]`,
 		},
 	}
@@ -121,4 +122,13 @@ func TestProjectJobsCompactDropsSuccessfulAndSkippedSteps(t *testing.T) {
 
 	full := projectJobs(jobs, "full")
 	require.Len(t, full[0].Steps, 4)
+}
+
+func TestFullRunDoesNotInventCompletionTime(t *testing.T) {
+	t.Parallel()
+	run := sampleRun()
+	run.Status = "in_progress"
+	result := fullRun(run)
+	assert.Empty(t, result.CompletedAt)
+	assert.Equal(t, 2, result.RunAttempt)
 }

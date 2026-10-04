@@ -151,11 +151,13 @@ Add to your `claude_desktop_config.json`:
 
 ## Available Tools
 
-Twelve tools are registered. `owner` and `repo` are optional on every one of
+Fourteen tools are registered. `owner` and `repo` are optional on every one of
 them and fall back to the configured repository.
 
 | Tool | Required arguments | Purpose |
 |---|---|---|
+| `verify_commit` | — | Verify an exact SHA or run attempt with optional failure evidence |
+| `watch_ci` | `cursor` | Resume verification and return changed workflows/jobs |
 | `get_check_status` | — | Check status for a branch, tag, or commit |
 | `list_workflows` | — | List the repository's workflows |
 | `list_runs` | — | List runs, optionally filtered by workflow |
@@ -170,6 +172,86 @@ them and fall back to the configured repository.
 | `download_artifact` | `artifact_id` | Write an artifact beneath `artifact_root` |
 
 The sections below detail the most commonly used ones.
+
+### Commit verification and resumable monitoring
+
+Start with `verify_commit` after pushing a commit:
+
+```json
+{
+  "name": "verify_commit",
+  "arguments": {
+    "owner": "example-org",
+    "repo": "example-repo",
+    "ref": "main",
+    "expected_workflows": ["CI", "Build"],
+    "diagnose_on_failure": true,
+    "wait_seconds": 20
+  }
+}
+```
+
+The ref is resolved once to an immutable SHA. Results include the repository,
+SHA, run IDs and attempts, observed time, missing workflows, current jobs,
+coverage, completion state, and a signed `cursor`. Pass that cursor to
+`watch_ci` with `wait_seconds` between 0 and 30; only changed workflows/jobs
+and removed snapshot entries are returned. Zero (the default) performs one
+observation. Cursors expire after 24 hours, survive server restarts with the
+same credentials/configuration, and remain pinned when a branch advances.
+A call has no background waiter; resume the existing cursor to continue.
+
+`expected_workflows` accepts workflow IDs (as strings) or exact names. Prefer
+IDs for workflows with duplicate names. The list accepts at most 50 entries
+and 8 KiB of names in total. Missing expected workflows keep the
+result pending. Without this argument, coverage is **observed Actions runs
+only**: a completed successful snapshot does not prove all required branch
+checks, external checks, deployments, or delayed workflows have registered.
+Branch/tag resolution needs permission to read commit metadata; a full SHA
+avoids that extra endpoint.
+
+For a rerun, pass `run_id` and the `expected_attempt` from `manage_run` to
+`verify_commit`. Do not combine a run target with `ref` or `expected_workflows`.
+An older attempt remains pending; a newer attempt yields `superseded` rather
+than claiming that the requested attempt succeeded. Existing run wait tools
+also accept `expected_attempt`. Mutation receipts distinguish acceptance from
+observed completion; cancellation acceptance is no longer reported as failure.
+
+Snapshots cap displayed workflows and jobs at 100 each, inspect jobs in at most
+10 nonsuccessful workflows, and diagnose at most two changed failed workflows.
+`truncated` and warnings expose omitted detail. Use `get_run` or
+`diagnose_failure` for a specific run to expand the evidence.
+
+### Bounded evidence and diagnosis
+
+`get_run` log reads and artifact reads accept `max_bytes` (default 16 KiB,
+maximum 256 KiB), `max_lines` (default 100), and `cursor`. Budgets apply **after**
+search/section/file filtering; metadata is additional. Log reads start at the
+beginning by default; use `tail` for the end. Readable text is accompanied by
+structured truncation and continuation metadata. Use one result representation
+in the consuming client to avoid duplicating text and structured content.
+
+Keep the original selection arguments when passing `next_cursor`. Log cursors
+are bound to the selected content digest and reject a changed live snapshot;
+start a fresh query if logs changed. Byte offsets refer to the selected view,
+not original source lines. Artifact cursors continue within files as well as
+between files. `manifest_only: true` lists ZIP entries without decompressing
+file contents; `summary_only: true` produces bounded JUnit/SARIF summaries.
+`file_pattern` selects entries for extraction.
+
+`diagnose_failure` merges annotations with surrounding log context, preserving
+vulnerability IDs, fixed versions, source/job/line evidence, and error
+fingerprints. It can inspect failed jobs in active runs. With no `run_id`, it
+selects a failed or active workflow on the exact `ref`/local HEAD rather than a
+historical failure on the branch. `max_error_lines` is a total diagnosis budget
+(default 50, maximum 200), with a 32 KiB evidence cap and at most 20 failed jobs.
+Flakiness evidence records sampled runs and compares same-SHA/event failures;
+heuristic verdicts are not proof that rerunning will fix a failure.
+
+Clients and ETag state are reused in a bounded server pool. Completed run
+archives are cached by client/run/attempt; artifact archives by client/artifact
+ID after availability checks. The shared archive cache holds at most eight
+entries/128 MiB; downloads and decoded log archives are capped at 64 MiB.
+Large archives return an explicit error instead of consuming unbounded memory.
 
 ### get_check_status
 
@@ -319,7 +401,7 @@ For example, a client can read `github-actions://runs/octo-org/demo/12345678` an
 
 Tool schemas use the official `modelcontextprotocol/go-sdk` validator. Invalid required arguments, enum values, and numeric limits are rejected before GitHub is contacted. SDK tool annotations also mark inspection tools as read-only and `manage_run`/`download_artifact` as potentially destructive, allowing capable hosts to present an appropriate confirmation step.
 
-Safe GitHub API reads are retried up to three times for transport failures, HTTP 429, exhausted primary rate limits, and transient gateway/service failures. `Retry-After` and `X-RateLimit-Reset` are honored with a bounded delay, while exponential retries use jitter. Mutating requests are never replayed. Structured logs and in-process transport statistics expose latency, retry waits, rate-limit state, and ETag cache activity. Configure retries with `retry_max` or `GITHUB_RETRY_MAX`; set it to `-1` to disable retries.
+Safe GitHub API reads are retried up to three times for transport failures, HTTP 429, exhausted primary rate limits, and transient gateway/service failures. `Retry-After` and `X-RateLimit-Reset` are honored; delays exceeding the call/retry budget return the upstream error without retrying early, while exponential retries use jitter. Mutating requests are never replayed. Structured logs and in-process transport statistics expose latency, retry waits, rate-limit state, and ETag cache activity. Configure retries with `retry_max` or `GITHUB_RETRY_MAX`; set it to `-1` to disable retries.
 
 `download_artifact` writes only beneath `artifact_root` (`GITHUB_ARTIFACT_ROOT`), uses a same-directory temporary file, and atomically publishes the completed artifact. Existing destinations are preserved unless `overwrite: true` is explicitly supplied.
 
@@ -369,7 +451,7 @@ Example:
 }
 ```
 
-The tool will return a timeout error if the workflow doesn't complete within the specified time, along with the current status and elapsed time.
+Wait results distinguish timeout from completion using `timeout_reached`. A timeout may return a successful tool response containing partial state; it is not a passing CI result. Fail-fast waits report `failure_observed` while a run remains active.
 
 ## Example Workflows
 

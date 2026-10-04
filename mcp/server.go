@@ -3,6 +3,7 @@ package mcp
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/denysvitali/gh-actions-mcp/config"
 	"github.com/denysvitali/gh-actions-mcp/github"
@@ -30,7 +31,9 @@ type MCPServer struct {
 
 	// invoke is the loopback session used by InvokeTool. See localSession for
 	// its concurrency contract.
-	invoke localSession
+	invoke    localSession
+	clientsMu sync.Mutex //nolint:forbidigo // Guards clients; no other locks are acquired while held.
+	clients   map[string]*github.Client
 }
 
 const (
@@ -114,6 +117,7 @@ func NewMCPServer(cfg *config.Config, log *logrus.Logger) (*MCPServer, error) {
 		version: serverVersion,
 	}
 
+	mcpServer.clients = map[string]*github.Client{cfg.RepoOwner + "/" + cfg.RepoName: ghClient}
 	mcpServer.registerTools()
 	mcpServer.registerResources()
 
@@ -125,6 +129,7 @@ func NewMCPServer(cfg *config.Config, log *logrus.Logger) (*MCPServer, error) {
 // deliberately: it is the order in which tools are added to the SDK server.
 func (s *MCPServer) registerTools() {
 	b := toolBuilder{}
+	s.registerMonitorTools(b)
 	s.registerRunTools(b)              // list_workflows, list_runs
 	s.registerGetRunTool(b)            // get_run
 	s.registerTimingTools(b)           // analyze_timing

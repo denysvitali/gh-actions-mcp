@@ -2,7 +2,6 @@ package github
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -12,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/google/go-github/v89/github"
@@ -38,11 +36,14 @@ type ArtifactFile struct {
 
 // ArtifactContent represents the contents of an artifact
 type ArtifactContent struct {
-	Name        string          `json:"name"`
-	ID          int64           `json:"id"`
-	SizeInBytes int64           `json:"size_in_bytes"`
-	Files       []*ArtifactFile `json:"files"`
-	FileCount   int             `json:"file_count"`
+	Name        string                  `json:"name"`
+	ID          int64                   `json:"id"`
+	SizeInBytes int64                   `json:"size_in_bytes"`
+	Files       []*ArtifactFile         `json:"files"`
+	FileCount   int                     `json:"file_count"`
+	Truncated   bool                    `json:"truncated"`
+	NextOffset  *int                    `json:"next_offset,omitempty"`
+	Reports     []ArtifactReportSummary `json:"reports,omitempty"`
 }
 
 // ArtifactDownloadResult represents the result of downloading an artifact
@@ -56,23 +57,28 @@ type ArtifactDownloadResult struct {
 
 // GetWorkflowRunArtifacts retrieves artifacts for a workflow run
 func (c *Client) GetWorkflowRunArtifacts(ctx context.Context, runID int64) ([]*Artifact, error) {
-	arts, _, err := c.gh.Actions.ListWorkflowRunArtifacts(ctx, c.owner, c.repo, runID, &github.ListOptions{
-		PerPage: c.perPageLimit,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list artifacts for run %d: %w", runID, err)
-	}
+	result := make([]*Artifact, 0)
+	options := &github.ListOptions{PerPage: c.perPageLimit}
+	for {
+		arts, resp, err := c.gh.Actions.ListWorkflowRunArtifacts(ctx, c.owner, c.repo, runID, options)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list artifacts for run %d: %w", runID, err)
+		}
+		for _, art := range arts.Artifacts {
+			result = append(result, &Artifact{
+				ID:          art.GetID(),
+				Name:        art.GetName(),
+				SizeInBytes: art.GetSizeInBytes(),
+				CreatedAt:   formatTimeValue(art.GetCreatedAt()),
+				ExpiresAt:   formatTimeValue(art.GetExpiresAt()),
+				ArchiveURL:  art.GetArchiveDownloadURL(),
+			})
+		}
 
-	result := make([]*Artifact, 0, len(arts.Artifacts))
-	for _, art := range arts.Artifacts {
-		result = append(result, &Artifact{
-			ID:          art.GetID(),
-			Name:        art.GetName(),
-			SizeInBytes: art.GetSizeInBytes(),
-			CreatedAt:   formatTimeValue(art.GetCreatedAt()),
-			ExpiresAt:   formatTimeValue(art.GetExpiresAt()),
-			ArchiveURL:  art.GetArchiveDownloadURL(),
-		})
+		if resp == nil || resp.NextPage == 0 {
+			break
+		}
+		options.Page = resp.NextPage
 	}
 
 	return result, nil
@@ -105,38 +111,7 @@ func (c *Client) GetArtifactByID(ctx context.Context, artifactID int64) (*Artifa
 // base64-encoded for binary (Encoding says which). An entry that cannot be opened
 // or read is logged and skipped rather than failing the whole call.
 func (c *Client) GetArtifactContent(ctx context.Context, artifactID int64, filePattern string, maxFileSize int64) (*ArtifactContent, error) {
-	artifact, err := c.GetArtifactByID(ctx, artifactID)
-	if err != nil {
-		return nil, err
-	}
-
-	body, err := c.openArtifactArchive(ctx, artifactID)
-	if err != nil {
-		return nil, err
-	}
-	defer body.Close()
-
-	zipData, err := io.ReadAll(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read artifact data: %w", err)
-	}
-	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to open artifact archive: %w", err)
-	}
-
-	files, err := artifactFilesFromZip(zipReader, filePattern, maxFileSize)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ArtifactContent{
-		Name:        artifact.Name,
-		ID:          artifact.ID,
-		SizeInBytes: artifact.SizeInBytes,
-		Files:       files,
-		FileCount:   len(files),
-	}, nil
+	return c.GetArtifactContentWithOptions(ctx, artifactID, ArtifactReadOptions{FilePattern: filePattern, MaxFileSize: maxFileSize})
 }
 
 // openArtifactArchive resolves the artifact's pre-signed download URL and returns
@@ -169,35 +144,6 @@ func (c *Client) openArtifactArchive(ctx context.Context, artifactID int64) (io.
 		return nil, fmt.Errorf("failed to fetch artifact: HTTP %d", zipResp.StatusCode)
 	}
 	return zipResp.Body, nil
-}
-
-// artifactFilesFromZip converts the archive entries matching filePattern into
-// ArtifactFiles, sorted by path. An invalid pattern is the only error; unreadable
-// entries are logged and dropped.
-func artifactFilesFromZip(zipReader *zip.Reader, filePattern string, maxFileSize int64) ([]*ArtifactFile, error) {
-	var files []*ArtifactFile
-	for _, file := range zipReader.File {
-		if file.FileInfo().IsDir() {
-			continue
-		}
-		if filePattern != "" {
-			matched, err := filepath.Match(filePattern, file.Name)
-			if err != nil {
-				return nil, fmt.Errorf("invalid file pattern %q: %w", filePattern, err)
-			}
-			if !matched {
-				continue
-			}
-		}
-		if entry := artifactFileEntry(file, maxFileSize); entry != nil {
-			files = append(files, entry)
-		}
-	}
-
-	sort.Slice(files, func(i, j int) bool {
-		return files[i].Path < files[j].Path
-	})
-	return files, nil
 }
 
 // artifactFileEntry reads one archive entry. It returns nil when the entry cannot

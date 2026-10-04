@@ -170,7 +170,7 @@ func TestStreamableHTTPClientRoundTrip(t *testing.T) {
 	assert.Equal(t, "test-version", session.InitializeResult().ServerInfo.Version)
 	tools, err := session.ListTools(context.Background(), nil)
 	require.NoError(t, err)
-	assert.Len(t, tools.Tools, 12)
+	assert.Len(t, tools.Tools, 14)
 }
 
 func TestStreamableHTTPBodyLimitAndOrigins(t *testing.T) {

@@ -56,6 +56,7 @@ type listRunsOutput struct {
 // meaningful depends on Element. See runElements for the dispatch.
 type getRunInput struct {
 	repoInput
+	evidenceInput
 	RunID         int64  `json:"run_id"`
 	Element       string `json:"element,omitempty"`
 	ArtifactID    *int64 `json:"artifact_id,omitempty"`
@@ -99,8 +100,9 @@ type checkStatusInput struct {
 // arguments and differ only in their completion predicate.
 type waitRunInput struct {
 	repoInput
-	RunID          int64 `json:"run_id"`
-	TimeoutMinutes int   `json:"timeout_minutes,omitempty"`
+	RunID           int64 `json:"run_id"`
+	ExpectedAttempt int   `json:"expected_attempt,omitempty"`
+	TimeoutMinutes  int   `json:"timeout_minutes,omitempty"`
 }
 
 type waitChecksInput struct {
@@ -117,13 +119,17 @@ type manageRunInput struct {
 
 type artifactInput struct {
 	repoInput
-	ArtifactID  int64  `json:"artifact_id"`
-	FilePattern string `json:"file_pattern,omitempty"`
-	MaxFileSize int64  `json:"max_file_size,omitempty"`
+	evidenceInput
+	ManifestOnly bool   `json:"manifest_only,omitempty"`
+	SummaryOnly  bool   `json:"summary_only,omitempty"`
+	ArtifactID   int64  `json:"artifact_id"`
+	FilePattern  string `json:"file_pattern,omitempty"`
+	MaxFileSize  int64  `json:"max_file_size,omitempty"`
 }
 
 type diagnoseInput struct {
 	repoInput
+	Ref            string `json:"ref,omitempty"`
 	RunID          *int64 `json:"run_id,omitempty"`
 	CheckFlakiness *bool  `json:"check_flakiness,omitempty"`
 	MaxErrorLines  int    `json:"max_error_lines,omitempty"`
@@ -134,4 +140,11 @@ type downloadArtifactInput struct {
 	ArtifactID int64  `json:"artifact_id"`
 	OutputPath string `json:"output_path,omitempty"`
 	Overwrite  bool   `json:"overwrite,omitempty"`
+}
+
+// evidenceInput bounds content after all search and selection filters.
+type evidenceInput struct {
+	MaxBytes int    `json:"max_bytes,omitempty"`
+	MaxLines int    `json:"max_lines,omitempty"`
+	Cursor   string `json:"cursor,omitempty"`
 }
