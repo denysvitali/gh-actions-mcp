@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/google/go-github/v89 v89.0.0
+	github.com/google/go-github/v92 v92.0.0
 	github.com/keybase/go-keychain v0.0.1
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/sirupsen/logrus v1.9.4
