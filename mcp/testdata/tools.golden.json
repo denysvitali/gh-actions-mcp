@@ -973,6 +973,10 @@
           "description": "For element=logs: don't print file headers (=== filename ===)",
           "type": "boolean"
         },
+        "no_source": {
+          "description": "For element=logs: drop echoed script-source lines (the run: block GitHub prints with a cyan marker), returning executed output only. ANSI escape codes are always stripped",
+          "type": "boolean"
+        },
         "offset": {
           "description": "For element=logs: skip first N lines before returning (0-based)",
           "type": "integer"

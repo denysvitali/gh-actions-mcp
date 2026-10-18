@@ -72,6 +72,7 @@ type getRunInput struct {
 	SearchRegex   string `json:"search_regex,omitempty"`
 	Context       int    `json:"context,omitempty"`
 	NoHeaders     bool   `json:"no_headers,omitempty"`
+	NoSource      bool   `json:"no_source,omitempty"`
 	Section       string `json:"section,omitempty"`
 	Format        string `json:"format,omitempty"`
 }

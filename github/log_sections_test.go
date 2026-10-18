@@ -262,7 +262,7 @@ func TestGetLogSection(t *testing.T) {
 	t.Run("extracts the matching section from the run archive", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Run tests", nil)
+		got, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Run tests", false, nil)
 		require.NoError(t, err)
 		assert.Contains(t, got, "PASS")
 		assert.NotContains(t, got, "noise")
@@ -271,7 +271,7 @@ func TestGetLogSection(t *testing.T) {
 	t.Run("filter options are applied after extraction", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Run tests", &LogFilterOptions{Filter: "FAIL"})
+		got, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Run tests", false, &LogFilterOptions{Filter: "FAIL"})
 		require.NoError(t, err)
 		assert.Equal(t, "FAIL somewhere", got)
 	})
@@ -279,7 +279,7 @@ func TestGetLogSection(t *testing.T) {
 	t.Run("a filter matching nothing yields an empty string", func(t *testing.T) {
 		t.Parallel()
 
-		got, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Run tests", &LogFilterOptions{Filter: "no-such-line"})
+		got, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Run tests", false, &LogFilterOptions{Filter: "no-such-line"})
 		require.NoError(t, err)
 		assert.Empty(t, got)
 	})
@@ -287,7 +287,7 @@ func TestGetLogSection(t *testing.T) {
 	t.Run("a missing section is an error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Deploy", nil)
+		_, err := newRunLogArchiveClient(t, 1, files).GetLogSection(context.Background(), 1, 0, "Deploy", false, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "section matching pattern")
 	})
@@ -299,7 +299,7 @@ func TestGetLogSection(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/runs/1/logs", statusHandler(http.StatusNotFound))
 		client := newMuxClient(t, mux)
 
-		_, err := client.GetLogSection(context.Background(), 1, 0, "Run tests", nil)
+		_, err := client.GetLogSection(context.Background(), 1, 0, "Run tests", false, nil)
 		require.Error(t, err)
 	})
 }

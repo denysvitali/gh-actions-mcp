@@ -9,15 +9,15 @@ import (
 // GetLogSection extracts a specific section from logs by header pattern
 // Section headers typically look like "##[group]Section Name" or similar patterns
 // If jobID is 0, it fetches logs for the run; otherwise for the specific job
-func (c *Client) GetLogSection(ctx context.Context, runID, jobID int64, sectionPattern string, filterOpts *LogFilterOptions) (string, error) {
+func (c *Client) GetLogSection(ctx context.Context, runID, jobID int64, sectionPattern string, noSource bool, filterOpts *LogFilterOptions) (string, error) {
 	var logs string
 	var err error
 
 	// Fetch logs based on whether we have a job ID
 	if jobID > 0 {
-		logs, err = c.jobLogs(ctx, jobID, LogViewOptions{})
+		logs, err = c.jobLogs(ctx, jobID, LogViewOptions{NoSource: noSource})
 	} else {
-		logs, err = c.workflowLogs(ctx, runID, "", LogViewOptions{})
+		logs, err = c.workflowLogs(ctx, runID, "", LogViewOptions{NoSource: noSource})
 	}
 
 	if err != nil {

@@ -28,12 +28,19 @@ const logSizeThreshold = 10 * 1024 * 1024 // 10MB
 // skipped entirely; a job log payload is truncated to this length.
 const maxLogFileSize = 50 * 1024 * 1024 // 50MB per file
 
+// ansiSourceMarker is the ANSI escape prefix GitHub Actions logs put on every
+// ECHOED SCRIPT SOURCE line — the "run:" block GitHub prints before executing a
+// step. Actually executed output lines are plain.
+const ansiSourceMarker = "\x1b[36;1m"
+
 // LogViewOptions selects which part of a log to return.
 //
 // The three line counts are applied in this order: Offset skips leading lines,
 // then Tail wins over Head if both are set. Line numbers count the
 // "=== file ===" headers too, unless NoHeaders suppresses them. Filter, when
-// active, is applied before any of the line windowing.
+// active, is applied before any of the line windowing; NoSource line dropping
+// happens before the filter so windows and searches refer to the returned
+// lines only.
 //
 // A zero value returns the whole log with headers.
 type LogViewOptions struct {
@@ -45,6 +52,9 @@ type LogViewOptions struct {
 	Offset int
 	// NoHeaders omits the "=== filename ===" separator between archive entries.
 	NoHeaders bool
+	// NoSource drops the echoed script-source lines GitHub marks with the
+	// leading "\x1b[36;1m" escape prefix, keeping executed output only.
+	NoSource bool
 	// Filter narrows the lines before windowing. Nil means no filtering.
 	Filter *LogFilterOptions
 }
@@ -243,10 +253,18 @@ func sortLogFiles(logFiles []logFile) {
 // formatLogFiles renders the entries into one string according to opts. It sorts
 // logFiles in place.
 //
-// The result ends with a newline unless it is empty, and it is empty when the
-// filter matched nothing or Offset ran past the end.
+// With NoSource the echoed script-source lines are dropped before any
+// filtering or windowing. The result ends with a newline unless it is empty,
+// and it is empty when the filter matched nothing or Offset ran past the end.
 func formatLogFiles(logFiles []logFile, opts LogViewOptions) (string, error) {
 	sortLogFiles(logFiles)
+
+	// ANSI is already stripped on ingest by [stripANSI].
+	if opts.NoSource {
+		for i := range logFiles {
+			logFiles[i].data = dropEchoedSourceLines(logFiles[i].data)
+		}
+	}
 
 	logStr, matched, err := applyLogFilter(joinLogFiles(logFiles, opts.NoHeaders), opts.Filter)
 	if err != nil {
@@ -256,6 +274,25 @@ func formatLogFiles(logFiles []logFile, opts LogViewOptions) (string, error) {
 		return "", nil
 	}
 	return applyLineWindow(logStr, opts), nil
+}
+
+// dropEchoedSourceLines removes every line whose first bytes are the GitHub
+// echoed-script-source marker ("\x1b[36;1m"). Lines that merely contain color
+// codes further in are kept: only the leading marker identifies a line GitHub
+// echoes from the step's script rather than wrote at runtime.
+func dropEchoedSourceLines(data string) string {
+	if !strings.Contains(data, ansiSourceMarker) {
+		return data
+	}
+	lines := strings.Split(data, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(line, ansiSourceMarker) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // joinLogFiles concatenates the entries, optionally prefixing each with a
@@ -354,22 +391,22 @@ func (c *Client) GetWorkflowLogFiles(ctx context.Context, runID int64) ([]*LogFi
 // GetWorkflowLogsWithPattern returns a workflow run's logs, keeping only archive
 // entries whose name matches filePattern (a filepath.Match glob; empty keeps all).
 //
-// See LogViewOptions for how head, tail, offset, noHeaders and filterOpts
-// interact. A pattern that matches nothing yields an empty string, not an error;
-// an invalid pattern is an error.
-func (c *Client) GetWorkflowLogsWithPattern(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filePattern string, filterOpts *LogFilterOptions) (string, error) {
+// See LogViewOptions for how head, tail, offset, noHeaders, noSource and
+// filterOpts interact. A pattern that matches nothing yields an empty string,
+// not an error; an invalid pattern is an error.
+func (c *Client) GetWorkflowLogsWithPattern(ctx context.Context, runID int64, head, tail, offset int, noHeaders, noSource bool, filePattern string, filterOpts *LogFilterOptions) (string, error) {
 	return c.workflowLogs(ctx, runID, filePattern, LogViewOptions{
-		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, Filter: filterOpts,
+		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, NoSource: noSource, Filter: filterOpts,
 	})
 }
 
 // GetWorkflowLogs returns all of a workflow run's logs.
 //
-// See LogViewOptions for how head, tail, offset, noHeaders and filterOpts
-// interact.
-func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+// See LogViewOptions for how head, tail, offset, noHeaders, noSource and
+// filterOpts interact.
+func (c *Client) GetWorkflowLogs(ctx context.Context, runID int64, head, tail, offset int, noHeaders, noSource bool, filterOpts *LogFilterOptions) (string, error) {
 	return c.workflowLogs(ctx, runID, "", LogViewOptions{
-		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, Filter: filterOpts,
+		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, NoSource: noSource, Filter: filterOpts,
 	})
 }
 
@@ -403,13 +440,13 @@ func (c *Client) workflowLogs(ctx context.Context, runID int64, filePattern stri
 
 // GetWorkflowJobLogs returns the logs of a single job.
 //
-// See LogViewOptions for how head, tail, offset, noHeaders and filterOpts
-// interact. GitHub may answer with either a ZIP or plain text; both are handled.
-// When GitHub returns 404 for a job that does exist, try
+// See LogViewOptions for how head, tail, offset, noHeaders, noSource and
+// filterOpts interact. GitHub may answer with either a ZIP or plain text; both
+// are handled. When GitHub returns 404 for a job that does exist, try
 // GetWorkflowJobLogsFromRunArchive instead.
-func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+func (c *Client) GetWorkflowJobLogs(ctx context.Context, jobID int64, head, tail, offset int, noHeaders, noSource bool, filterOpts *LogFilterOptions) (string, error) {
 	return c.jobLogs(ctx, jobID, LogViewOptions{
-		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, Filter: filterOpts,
+		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, NoSource: noSource, Filter: filterOpts,
 	})
 }
 
@@ -479,10 +516,11 @@ func logFilesFromJobPayload(payload []byte, jobID int64) []logFile {
 // run archive still holds their system logs. It errors when the job is not part of
 // the run, or when the archive contains no entry under the job's name.
 //
-// See LogViewOptions for how head, tail, offset, noHeaders and filterOpts interact.
-func (c *Client) GetWorkflowJobLogsFromRunArchive(ctx context.Context, runID, jobID int64, head, tail, offset int, noHeaders bool, filterOpts *LogFilterOptions) (string, error) {
+// See LogViewOptions for how head, tail, offset, noHeaders, noSource and
+// filterOpts interact.
+func (c *Client) GetWorkflowJobLogsFromRunArchive(ctx context.Context, runID, jobID int64, head, tail, offset int, noHeaders, noSource bool, filterOpts *LogFilterOptions) (string, error) {
 	return c.jobLogsFromRunArchive(ctx, runID, jobID, LogViewOptions{
-		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, Filter: filterOpts,
+		Head: head, Tail: tail, Offset: offset, NoHeaders: noHeaders, NoSource: noSource, Filter: filterOpts,
 	})
 }
 

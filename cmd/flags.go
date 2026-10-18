@@ -35,6 +35,7 @@ var (
 	logsHead      int
 	logsOffset    int
 	logsNoHeaders bool
+	logsNoSource  bool
 	logsJobID     int64
 	logsOwner     string
 	logsRepo      string
@@ -73,6 +74,7 @@ func registerLogsFlags(cmd *cobra.Command) {
 	flags.IntVar(&logsHead, "head", 0, "Show first N lines")
 	flags.IntVar(&logsOffset, "offset", 0, "Skip first N lines")
 	flags.BoolVar(&logsNoHeaders, "no-headers", false, "Don't print file headers")
+	flags.BoolVar(&logsNoSource, "no-source", false, "Drop echoed script-source lines (executed output only)")
 	flags.Int64VarP(&logsJobID, "job-id", "j", 0, "Specific job ID (when using run ID)")
 	flags.StringVar(&logsOwner, "owner", "", "Override repo owner")
 	flags.StringVar(&logsRepo, "repo", "", "Override repo name")

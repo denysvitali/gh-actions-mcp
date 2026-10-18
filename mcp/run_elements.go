@@ -234,16 +234,16 @@ func fetchRunLogs(ctx context.Context, req runElementRequest, view logView, filt
 
 	if input.JobID != nil {
 		if input.Section != "" {
-			return req.client.GetLogSection(ctx, 0, *input.JobID, input.Section, filter)
+			return req.client.GetLogSection(ctx, 0, *input.JobID, input.Section, input.NoSource, filter)
 		}
-		logs, err := req.client.GetWorkflowJobLogs(ctx, *input.JobID, view.head, view.tail, view.offset, input.NoHeaders, filter)
+		logs, err := req.client.GetWorkflowJobLogs(ctx, *input.JobID, view.head, view.tail, view.offset, input.NoHeaders, input.NoSource, filter)
 		if err == nil {
 			return logs, nil
 		}
-		return req.client.GetWorkflowJobLogsFromRunArchive(ctx, input.RunID, *input.JobID, view.head, view.tail, view.offset, input.NoHeaders, filter)
+		return req.client.GetWorkflowJobLogsFromRunArchive(ctx, input.RunID, *input.JobID, view.head, view.tail, view.offset, input.NoHeaders, input.NoSource, filter)
 	}
 	if input.Section != "" {
-		return req.client.GetLogSection(ctx, input.RunID, 0, input.Section, filter)
+		return req.client.GetLogSection(ctx, input.RunID, 0, input.Section, input.NoSource, filter)
 	}
-	return req.client.GetWorkflowLogsWithPattern(ctx, input.RunID, view.head, view.tail, view.offset, input.NoHeaders, input.FilePattern, filter)
+	return req.client.GetWorkflowLogsWithPattern(ctx, input.RunID, view.head, view.tail, view.offset, input.NoHeaders, input.NoSource, input.FilePattern, filter)
 }

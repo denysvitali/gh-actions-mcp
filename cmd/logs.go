@@ -176,11 +176,11 @@ func fetchLogs(
 ) (string, error) {
 	switch {
 	case logsSection != "":
-		return client.GetLogSection(ctx, target.RunID, target.JobID, logsSection, filterOpts)
+		return client.GetLogSection(ctx, target.RunID, target.JobID, logsSection, logsNoSource, filterOpts)
 	case target.JobID > 0:
-		return client.GetWorkflowJobLogs(ctx, target.JobID, logsHead, logsTail, logsOffset, logsNoHeaders, filterOpts)
+		return client.GetWorkflowJobLogs(ctx, target.JobID, logsHead, logsTail, logsOffset, logsNoHeaders, logsNoSource, filterOpts)
 	default:
-		return client.GetWorkflowLogs(ctx, target.RunID, logsHead, logsTail, logsOffset, logsNoHeaders, filterOpts)
+		return client.GetWorkflowLogs(ctx, target.RunID, logsHead, logsTail, logsOffset, logsNoHeaders, logsNoSource, filterOpts)
 	}
 }
 

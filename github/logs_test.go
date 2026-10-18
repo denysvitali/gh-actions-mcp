@@ -347,7 +347,7 @@ func TestGetWorkflowJobLogs_RedirectPlainTextWithoutAuthHeader(t *testing.T) {
 		perPageLimit: 50,
 	}
 
-	logs, err := client.GetWorkflowJobLogs(context.Background(), jobID, 0, 0, 0, true, nil)
+	logs, err := client.GetWorkflowJobLogs(context.Background(), jobID, 0, 0, 0, true, false, nil)
 	assert.NoError(t, err)
 	assert.Contains(t, logs, "line-1")
 	assert.Contains(t, logs, "line-3")
@@ -395,7 +395,7 @@ func TestGetWorkflowJobLogs_RedirectZipStillWorks(t *testing.T) {
 		perPageLimit: 50,
 	}
 
-	logs, err := client.GetWorkflowJobLogs(context.Background(), jobID, 0, 0, 0, false, nil)
+	logs, err := client.GetWorkflowJobLogs(context.Background(), jobID, 0, 0, 0, false, false, nil)
 	assert.NoError(t, err)
 	assert.Contains(t, logs, "=== step-1.log ===")
 	assert.Contains(t, logs, "zip-line-2")
@@ -457,7 +457,7 @@ func TestGetWorkflowJobLogsFromRunArchive_FiltersJobFolder(t *testing.T) {
 		perPageLimit: 50,
 	}
 
-	logs, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), runID, jobID, 0, 0, 0, false, nil)
+	logs, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), runID, jobID, 0, 0, 0, false, false, nil)
 	require.NoError(t, err)
 	assert.Contains(t, logs, "=== Lint/system.txt ===")
 	assert.Contains(t, logs, "lint-system-line")
@@ -598,6 +598,29 @@ func TestFormatLogFiles(t *testing.T) {
 	}
 }
 
+func TestFormatLogFilesNoSource(t *testing.T) {
+	t.Parallel()
+
+	// GitHub marks every echoed script-source line with a cyan CSI prefix;
+	// the executed output below it is plain.
+	files := []logFile{{name: "step.txt", data: "\x1b[36;1mrun: echo hi\x1b[0m\nhi\n"}}
+
+	t.Run("drops echoed source lines", func(t *testing.T) {
+		t.Parallel()
+		got, err := formatLogFiles(append([]logFile(nil), files...), LogViewOptions{NoSource: true, NoHeaders: true})
+		require.NoError(t, err)
+		assert.NotContains(t, got, "run: echo hi")
+		assert.Contains(t, got, "hi")
+	})
+
+	t.Run("keeps them by default", func(t *testing.T) {
+		t.Parallel()
+		got, err := formatLogFiles(append([]logFile(nil), files...), LogViewOptions{NoHeaders: true})
+		require.NoError(t, err)
+		assert.Contains(t, got, "run: echo hi")
+	})
+}
+
 func TestReadZipArchive(t *testing.T) {
 	t.Parallel()
 
@@ -713,7 +736,7 @@ func TestGetWorkflowLogs(t *testing.T) {
 	t.Run("concatenates every file with headers", func(t *testing.T) {
 		t.Parallel()
 
-		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogs(context.Background(), 1, 0, 0, 0, false, nil)
+		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogs(context.Background(), 1, 0, 0, 0, false, false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "=== build/1_step.txt ===\nbuild-line-1\nbuild-line-2\n=== lint/1_step.txt ===\nlint-line-1\n", logs)
 	})
@@ -723,15 +746,15 @@ func TestGetWorkflowLogs(t *testing.T) {
 
 		client := newRunLogArchiveClient(t, 1, files)
 
-		head, err := client.GetWorkflowLogs(context.Background(), 1, 2, 0, 0, true, nil)
+		head, err := client.GetWorkflowLogs(context.Background(), 1, 2, 0, 0, true, false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "build-line-1\nbuild-line-2\n", head)
 
-		tail, err := client.GetWorkflowLogs(context.Background(), 1, 0, 1, 0, true, nil)
+		tail, err := client.GetWorkflowLogs(context.Background(), 1, 0, 1, 0, true, false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "lint-line-1\n", tail)
 
-		offset, err := client.GetWorkflowLogs(context.Background(), 1, 0, 0, 1, true, nil)
+		offset, err := client.GetWorkflowLogs(context.Background(), 1, 0, 0, 1, true, false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "build-line-2\nlint-line-1\n", offset)
 	})
@@ -739,7 +762,7 @@ func TestGetWorkflowLogs(t *testing.T) {
 	t.Run("filter options are applied", func(t *testing.T) {
 		t.Parallel()
 
-		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogs(context.Background(), 1, 0, 0, 0, false, &LogFilterOptions{Filter: "lint-line"})
+		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogs(context.Background(), 1, 0, 0, 0, false, false, &LogFilterOptions{Filter: "lint-line"})
 		require.NoError(t, err)
 		assert.Equal(t, "=== lint/1_step.txt ===\nlint-line-1\n", logs)
 	})
@@ -751,7 +774,7 @@ func TestGetWorkflowLogs(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/runs/1/logs", statusHandler(http.StatusNotFound))
 		client := newMuxClient(t, mux)
 
-		_, err := client.GetWorkflowLogs(context.Background(), 1, 0, 0, 0, false, nil)
+		_, err := client.GetWorkflowLogs(context.Background(), 1, 0, 0, 0, false, false, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to get workflow log URL for run 1")
 	})
@@ -768,7 +791,7 @@ func TestGetWorkflowLogsWithPattern(t *testing.T) {
 	t.Run("pattern selects matching archive entries", func(t *testing.T) {
 		t.Parallel()
 
-		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogsWithPattern(context.Background(), 1, 0, 0, 0, false, "lint/*", nil)
+		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogsWithPattern(context.Background(), 1, 0, 0, 0, false, false, "lint/*", nil)
 		require.NoError(t, err)
 		assert.Equal(t, "=== lint/1_step.txt ===\nlint-line\n", logs)
 	})
@@ -776,7 +799,7 @@ func TestGetWorkflowLogsWithPattern(t *testing.T) {
 	t.Run("a pattern matching nothing yields an empty result", func(t *testing.T) {
 		t.Parallel()
 
-		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogsWithPattern(context.Background(), 1, 0, 0, 0, false, "nope/*", nil)
+		logs, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogsWithPattern(context.Background(), 1, 0, 0, 0, false, false, "nope/*", nil)
 		require.NoError(t, err)
 		assert.Empty(t, logs)
 	})
@@ -784,7 +807,7 @@ func TestGetWorkflowLogsWithPattern(t *testing.T) {
 	t.Run("an invalid pattern is reported", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogsWithPattern(context.Background(), 1, 0, 0, 0, false, "[", nil)
+		_, err := newRunLogArchiveClient(t, 1, files).GetWorkflowLogsWithPattern(context.Background(), 1, 0, 0, 0, false, false, "[", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `invalid file pattern "["`)
 	})
@@ -832,7 +855,7 @@ func TestGetWorkflowJobLogsFromRunArchive_Errors(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/runs/1/jobs", jsonHandler(`{"total_count":1,"jobs":[{"id":10,"name":"build"}]}`))
 		client := newMuxClient(t, mux)
 
-		_, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), 1, 999, 0, 0, 0, false, nil)
+		_, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), 1, 999, 0, 0, 0, false, false, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "job 999 not found in run 1")
 	})
@@ -854,7 +877,7 @@ func TestGetWorkflowJobLogsFromRunArchive_Errors(t *testing.T) {
 		client, url := newMuxClientWithURL(t, mux)
 		base = url
 
-		_, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), 1, 10, 0, 0, 0, false, nil)
+		_, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), 1, 10, 0, 0, 0, false, false, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `no logs for job "build" (10) found in run 1 archive`)
 	})
@@ -866,7 +889,7 @@ func TestGetWorkflowJobLogsFromRunArchive_Errors(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/runs/1/jobs", statusHandler(http.StatusForbidden))
 		client := newMuxClient(t, mux)
 
-		_, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), 1, 10, 0, 0, 0, false, nil)
+		_, err := client.GetWorkflowJobLogsFromRunArchive(context.Background(), 1, 10, 0, 0, 0, false, false, nil)
 		require.Error(t, err)
 	})
 }
@@ -881,7 +904,7 @@ func TestGetWorkflowJobLogs_Errors(t *testing.T) {
 		mux.HandleFunc("/repos/owner/repo/actions/jobs/10/logs", statusHandler(http.StatusNotFound))
 		client := newMuxClient(t, mux)
 
-		_, err := client.GetWorkflowJobLogs(context.Background(), 10, 0, 0, 0, false, nil)
+		_, err := client.GetWorkflowJobLogs(context.Background(), 10, 0, 0, 0, false, false, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to get job log URL for job 10")
 	})
@@ -901,7 +924,7 @@ func TestGetWorkflowJobLogs_Errors(t *testing.T) {
 		client, url := newMuxClientWithURL(t, mux)
 		base = url
 
-		_, err := client.GetWorkflowJobLogs(context.Background(), 10, 0, 0, 0, false, nil)
+		_, err := client.GetWorkflowJobLogs(context.Background(), 10, 0, 0, 0, false, false, nil)
 		require.Error(t, err)
 		var httpErr *HTTPError
 		require.ErrorAs(t, err, &httpErr)
