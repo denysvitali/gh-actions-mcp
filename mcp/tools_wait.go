@@ -25,7 +25,7 @@ func (b toolBuilder) waitExpectedAttempt() toolOption {
 // The 120-minute ceiling is the transport's hard limit on a single request.
 func (b toolBuilder) waitTimeoutMinutes() toolOption {
 	return b.WithNumber("timeout_minutes",
-		b.Description("Maximum time to wait in minutes (default: 30)"),
+		b.Description("Maximum time to wait in minutes (default: 25)"),
 		b.DefaultNumber(defaultWaitTimeoutMinutes),
 		b.Minimum(1),
 		b.Maximum(120),

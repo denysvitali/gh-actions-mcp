@@ -438,7 +438,7 @@ This server's retry transport honours `Retry-After` and `X-RateLimit-Reset` on s
 
 ## Timeout Behavior for Workflows
 
-The `wait_for_run`, `wait_all`, and `wait_for_commit_checks` tools accept a `timeout_minutes` argument. The default is 30 minutes and the server caps individual waits at 120 minutes.
+The `wait_for_run`, `wait_all`, and `wait_for_commit_checks` tools accept a `timeout_minutes` argument. The default is 25 minutes and the server caps individual waits at 120 minutes. When the client supplies an MCP progress token, the server sends a progress notification every 30 seconds while it waits, so clients that abort silent calls (Claude Code does after 30 minutes) keep longer waits alive.
 
 Example:
 ```json

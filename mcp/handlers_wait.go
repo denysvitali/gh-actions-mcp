@@ -14,8 +14,10 @@ import (
 // succeeds, so the caller can decide whether to keep waiting.
 
 // defaultWaitTimeoutMinutes is the polling budget used when the caller does not
-// specify one. It matches the schema default declared in tools_wait.go.
-const defaultWaitTimeoutMinutes = 30
+// specify one. It matches the schema default declared in tools_wait.go and stays
+// below the 30-minute idle limit clients apply when they send no progress token,
+// so they still receive the TimeoutReached result instead of aborting.
+const defaultWaitTimeoutMinutes = 25
 
 // waitTarget names what a wait tool polls until completion.
 type waitTarget int
@@ -40,7 +42,7 @@ func (s *MCPServer) waitAllTyped(ctx context.Context, request *sdkmcp.CallToolRe
 // waitRunTyped implements both run-oriented wait tools. A partial result is
 // returned even on error, so a caller that times out still sees what was
 // observed.
-func (s *MCPServer) waitRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, input waitRunInput, target waitTarget) (*sdkmcp.CallToolResult, github.WaitRunResult, error) {
+func (s *MCPServer) waitRunTyped(ctx context.Context, request *sdkmcp.CallToolRequest, input waitRunInput, target waitTarget) (*sdkmcp.CallToolResult, github.WaitRunResult, error) {
 	var output github.WaitRunResult
 	client, owner, repo, err := s.clientFromInput(input.repoInput)
 	if err != nil {
@@ -50,7 +52,9 @@ func (s *MCPServer) waitRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest,
 	if timeout <= 0 {
 		timeout = defaultWaitTimeoutMinutes
 	}
+	stop := startWaitHeartbeat(ctx, request, fmt.Sprintf("run %d", input.RunID))
 	result, err := client.WaitForRunAttempt(ctx, input.RunID, timeout, input.ExpectedAttempt, target == waitTargetAllJobs)
+	stop()
 	if result != nil {
 		output = *result
 	}
@@ -62,7 +66,7 @@ func (s *MCPServer) waitRunTyped(ctx context.Context, _ *sdkmcp.CallToolRequest,
 
 // waitForCommitChecksTyped answers wait_for_commit_checks, which waits on a ref
 // rather than on a single run.
-func (s *MCPServer) waitForCommitChecksTyped(ctx context.Context, _ *sdkmcp.CallToolRequest, input waitChecksInput) (*sdkmcp.CallToolResult, github.WaitCommitChecksResult, error) {
+func (s *MCPServer) waitForCommitChecksTyped(ctx context.Context, request *sdkmcp.CallToolRequest, input waitChecksInput) (*sdkmcp.CallToolResult, github.WaitCommitChecksResult, error) {
 	var output github.WaitCommitChecksResult
 	client, owner, repo, err := s.clientFromInput(input.repoInput)
 	if err != nil {
@@ -72,7 +76,9 @@ func (s *MCPServer) waitForCommitChecksTyped(ctx context.Context, _ *sdkmcp.Call
 	if timeout <= 0 {
 		timeout = defaultWaitTimeoutMinutes
 	}
+	stop := startWaitHeartbeat(ctx, request, "checks for "+strings.TrimSpace(input.Ref))
 	result, err := client.WaitForCommitChecks(ctx, strings.TrimSpace(input.Ref), timeout)
+	stop()
 	if result != nil {
 		output = *result
 	}

@@ -1783,8 +1783,8 @@
           "type": "integer"
         },
         "timeout_minutes": {
-          "default": 30,
-          "description": "Maximum time to wait in minutes (default: 30)",
+          "default": 25,
+          "description": "Maximum time to wait in minutes (default: 25)",
           "maximum": 120,
           "minimum": 1,
           "type": "integer"
@@ -1873,8 +1873,8 @@
           "type": "string"
         },
         "timeout_minutes": {
-          "default": 30,
-          "description": "Maximum time to wait in minutes (default: 30)",
+          "default": 25,
+          "description": "Maximum time to wait in minutes (default: 25)",
           "maximum": 120,
           "minimum": 1,
           "type": "integer"
@@ -1945,8 +1945,8 @@
           "type": "integer"
         },
         "timeout_minutes": {
-          "default": 30,
-          "description": "Maximum time to wait in minutes (default: 30)",
+          "default": 25,
+          "description": "Maximum time to wait in minutes (default: 25)",
           "maximum": 120,
           "minimum": 1,
           "type": "integer"
